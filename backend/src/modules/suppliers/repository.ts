@@ -1,0 +1,354 @@
+import type pg from 'pg';
+import { audit, diff, type RequestMeta } from '../../audit.js';
+import type { UserContext } from '../../auth/context.js';
+import { withTransaction, type Queryable } from '../../db.js';
+import { conflict, notFound } from '../../errors.js';
+import { buildSearchQuery, type SearchCriteria } from './search.js';
+import type { AddAddress, UpdateGeneral } from './schemas.js';
+
+const label = (lingua: string, alias: string) =>
+  lingua === 'EN' ? `COALESCE(${alias}.descrizione_en, ${alias}.descrizione_it)` : `${alias}.descrizione_it`;
+
+export async function assertSupplierExists(db: Queryable, id: number) {
+  const { rowCount } = await db.query('SELECT 1 FROM albo.fornitore WHERE id = $1', [id]);
+  if (!rowCount) throw notFound('Fornitore non trovato');
+}
+
+// ---------------------------------------------------------------------------
+// Ricerca
+// ---------------------------------------------------------------------------
+export async function searchSuppliers(db: Queryable, user: UserContext, criteria: SearchCriteria) {
+  const { text, values } = buildSearchQuery(criteria, user.id);
+  const { rows } = await db.query(text, values);
+  return {
+    totale: rows[0]?.totale ?? 0,
+    pagina: criteria.pagina,
+    limite: criteria.limite,
+    risultati: rows.map((r) => ({
+      id: r.id,
+      ragioneSociale: r.ragione_sociale,
+      partitaIva: r.partita_iva,
+      partitaIvaCee: r.partita_iva_cee,
+      codiceFiscale: r.codice_fiscale,
+      email: r.email,
+      codiciSap: r.codici_sap,
+      codiciSt3: r.codici_st3,
+      stato: user.lingua === 'EN' ? (r.stato_descrizione_en ?? r.stato_descrizione_it) : r.stato_descrizione_it,
+      attivo: r.attivo,
+      preferito: r.preferito,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Intestazione (UCSupplierHeader)
+// ---------------------------------------------------------------------------
+export async function getHeader(db: Queryable, user: UserContext, id: number) {
+  const { rows } = await db.query(
+    `SELECT f.id, f.ragione_sociale, f.denominazione_sociale, f.sede_legale, f.attivo, f.updated_at,
+            CASE WHEN $3 = 'EN' THEN COALESCE(f.stato_descrizione_en, f.stato_descrizione_it) ELSE f.stato_descrizione_it END AS stato,
+            EXISTS (SELECT 1 FROM albo.fornitore_preferito fp WHERE fp.fornitore_id = f.id AND fp.utente_id = $2) AS preferito
+       FROM albo.v_fornitore_sintesi f WHERE f.id = $1`,
+    [id, user.id, user.lingua],
+  );
+  const r = rows[0];
+  if (!r) throw notFound('Fornitore non trovato');
+  return {
+    id: r.id,
+    ragioneSociale: r.ragione_sociale,
+    denominazioneSociale: r.denominazione_sociale,
+    sedeLegale: r.sede_legale,
+    stato: r.stato,
+    attivo: r.attivo,
+    preferito: r.preferito,
+    aggiornatoIl: (r.updated_at as Date).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Scheda dati anagrafici (GetSupplierGeneralData, spec. cap. 8)
+// ---------------------------------------------------------------------------
+export async function getGeneral(db: pg.Pool, user: UserContext, id: number) {
+  const L = user.lingua;
+  const [main, stati, indirizzi, enti, codici, marchi] = await Promise.all([
+    db.query(
+      `SELECT f.*, f.updated_at::text AS versione, s.ragione_sociale AS sostituito_ragione_sociale,
+              EXISTS (SELECT 1 FROM albo.subfornitore sf WHERE sf.fornitore_id = f.id) AS opera_con_sub,
+              EXISTS (SELECT 1 FROM albo.fornitore_preferito fp WHERE fp.fornitore_id = f.id AND fp.utente_id = $2) AS preferito
+         FROM albo.fornitore f
+         LEFT JOIN albo.fornitore s ON s.id = f.sostituito_da_id
+        WHERE f.id = $1`,
+      [id, user.id],
+    ),
+    db.query(
+      `SELECT fs.id, fs.stato_id, ${label(L, 's')} AS descrizione, fs.data_da,
+              fs.id = (SELECT sc.id FROM albo.fornitore_stato sc WHERE sc.fornitore_id = fs.fornitore_id
+                        ORDER BY sc.data_da DESC, sc.id DESC LIMIT 1) AS corrente
+         FROM albo.fornitore_stato fs JOIN ref.stato_fornitore s ON s.id = fs.stato_id
+        WHERE fs.fornitore_id = $1
+        ORDER BY fs.data_da DESC, fs.id DESC`,
+      [id],
+    ),
+    db.query(
+      `SELECT i.id, i.indirizzo, i.cap, i.telefono, i.principale, i.latitudine, i.longitudine,
+              ti.id AS ti_id, ${label(L, 'ti')} AS ti_d,
+              n.id AS n_id, ${label(L, 'n')} AS n_d,
+              r.id AS r_id, ${label(L, 'r')} AS r_d,
+              p.id AS p_id, ${label(L, 'p')} AS p_d, p.sigla AS p_sigla,
+              l.id AS l_id, ${label(L, 'l')} AS l_d
+         FROM albo.fornitore_indirizzo i
+         JOIN ref.tipo_indirizzo ti ON ti.id = i.tipo_indirizzo_id
+         JOIN ref.localita l ON l.id = i.localita_id
+         JOIN ref.nazione n ON n.id = l.nazione_id
+         LEFT JOIN ref.provincia p ON p.id = l.provincia_id
+         LEFT JOIN ref.regione r ON r.id = p.regione_id
+        WHERE i.fornitore_id = $1
+        ORDER BY i.principale DESC, ti.ordine, i.id`,
+      [id],
+    ),
+    db.query(
+      `SELECT e.id, ${label(L, 'e')} AS descrizione, (ue.ente_id IS NOT NULL) AS autorizzato, v.val_generale
+         FROM albo.fornitore_ente fe
+         JOIN ref.ente e ON e.id = fe.ente_id
+         LEFT JOIN iam.utente_ente ue ON ue.ente_id = fe.ente_id AND ue.utente_id = $2
+         LEFT JOIN albo.fornitore_valutazione v ON v.fornitore_id = fe.fornitore_id AND v.ente_id = fe.ente_id
+        WHERE fe.fornitore_id = $1
+        ORDER BY e.ordine, 2`,
+      [id, user.id],
+    ),
+    db.query(
+      `SELECT a.codice AS applicativo, ca.codice
+         FROM albo.fornitore_codice_applicativo ca JOIN ref.applicativo a ON a.id = ca.applicativo_id
+        WHERE ca.fornitore_id = $1 ORDER BY a.ordine, ca.codice`,
+      [id],
+    ),
+    db.query(
+      `SELECT m.descrizione_it AS marchio, d.descrizione_it AS divisione
+         FROM albo.fornitore_marchio fm
+         JOIN ref.marchio m ON m.id = fm.marchio_id
+         LEFT JOIN ref.divisione d ON d.id = fm.divisione_id
+        WHERE fm.fornitore_id = $1 ORDER BY m.ordine, m.descrizione_it`,
+      [id],
+    ),
+  ]);
+
+  const f = main.rows[0];
+  if (!f) throw notFound('Fornitore non trovato');
+  const num = (v: string | null) => (v == null ? null : Number(v));
+
+  return {
+    id: f.id,
+    versione: f.versione,
+    aggiornatoIl: (f.updated_at as Date).toISOString(),
+    master: {
+      ragioneSociale: f.ragione_sociale,
+      partitaIva: f.partita_iva,
+      partitaIvaCee: f.partita_iva_cee,
+      codiceFiscale: f.codice_fiscale,
+      telefono: f.telefono,
+      fax: f.fax,
+      codAccorpamento: f.cod_accorpamento,
+      sostituitoDa: f.sostituito_da_id ? { id: f.sostituito_da_id, ragioneSociale: f.sostituito_ragione_sociale } : null,
+      sincronizzatoIl: f.master_sync_at ? (f.master_sync_at as Date).toISOString() : null,
+    },
+    dati: {
+      denominazioneSociale: f.denominazione_sociale,
+      sedeLegale: f.sede_legale,
+      dataInizioAttivita: f.data_inizio_attivita,
+      dataInizioRapporto: f.data_inizio_rapporto,
+      dataFineRapporto: f.data_fine_rapporto,
+      responsabileCodice: f.responsabile_codice,
+      uf: f.uf,
+      email: f.email,
+      emailPec: f.email_pec,
+      numeroRea: f.numero_rea,
+      sitoWeb: f.sito_web,
+    },
+    operaConSubfornitori: f.opera_con_sub,
+    stati: stati.rows.map((r) => ({
+      id: r.id,
+      statoId: r.stato_id,
+      descrizione: r.descrizione,
+      dataDa: r.data_da,
+      corrente: r.corrente,
+    })),
+    indirizzi: indirizzi.rows.map((r) => ({
+      id: r.id,
+      tipoIndirizzo: { id: r.ti_id, descrizione: r.ti_d },
+      nazione: { id: r.n_id, descrizione: r.n_d },
+      regione: r.r_id ? { id: r.r_id, descrizione: r.r_d } : null,
+      provincia: r.p_id ? { id: r.p_id, descrizione: r.p_d, sigla: r.p_sigla } : null,
+      localita: { id: r.l_id, descrizione: r.l_d },
+      indirizzo: r.indirizzo,
+      cap: r.cap,
+      telefono: r.telefono,
+      principale: r.principale,
+      latitudine: num(r.latitudine),
+      longitudine: num(r.longitudine),
+    })),
+    enti: enti.rows.map((r) => ({
+      enteId: r.id,
+      descrizione: r.descrizione,
+      autorizzato: r.autorizzato,
+      valutazioneGenerale: r.autorizzato ? r.val_generale : null,
+    })),
+    codiciApplicativi: codici.rows,
+    marchi: marchi.rows,
+    preferito: f.preferito,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Aggiornamento dati anagrafici (UpdateSupplierGeneralData, spec. cap. 9)
+// ---------------------------------------------------------------------------
+const GENERAL_COLUMNS = {
+  denominazioneSociale: 'denominazione_sociale',
+  sedeLegale: 'sede_legale',
+  dataInizioAttivita: 'data_inizio_attivita',
+  dataInizioRapporto: 'data_inizio_rapporto',
+  dataFineRapporto: 'data_fine_rapporto',
+  uf: 'uf',
+  email: 'email',
+  emailPec: 'email_pec',
+  numeroRea: 'numero_rea',
+  sitoWeb: 'sito_web',
+} as const satisfies Record<Exclude<keyof UpdateGeneral, 'versione'>, string>;
+
+export async function updateGeneral(db: pg.Pool, user: UserContext, id: number, body: UpdateGeneral, meta: RequestMeta) {
+  return withTransaction(db, async (tx) => {
+    const cols = Object.values(GENERAL_COLUMNS);
+    const { rows } = await tx.query(
+      `SELECT updated_at::text AS versione, ${cols.join(', ')} FROM albo.fornitore WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    const current = rows[0];
+    if (!current) throw notFound('Fornitore non trovato');
+    if (current.versione !== body.versione) {
+      throw conflict('MODIFICATO_DA_ALTRI', 'I dati sono stati modificati da un altro utente. Ricarica la pagina e riprova.');
+    }
+
+    const keys = Object.keys(GENERAL_COLUMNS) as (keyof typeof GENERAL_COLUMNS)[];
+    const sets = keys.map((k, i) => `${GENERAL_COLUMNS[k]} = $${i + 2}`);
+    const values = keys.map((k) => body[k]);
+    const { rows: updated } = await tx.query(
+      `UPDATE albo.fornitore SET ${sets.join(', ')}, updated_by = $${keys.length + 2}
+        WHERE id = $1 RETURNING updated_at::text AS versione`,
+      [id, ...values, user.id],
+    );
+
+    const before = Object.fromEntries(keys.map((k) => [k, current[GENERAL_COLUMNS[k]]]));
+    const after = Object.fromEntries(keys.map((k) => [k, body[k]]));
+    await audit(
+      tx,
+      user,
+      { azione: 'SUPPLIER_GENERAL_UPDATE', entita: 'fornitore', entitaId: id, fornitoreId: id, dettagli: diff(before, after) },
+      meta,
+    );
+    return { versione: updated[0]!.versione as string };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Stati (AddSupplierState / RemoveSupplierState)
+// ---------------------------------------------------------------------------
+export async function addState(
+  db: pg.Pool,
+  user: UserContext,
+  fornitoreId: number,
+  statoId: number,
+  dataDa: string,
+  meta: RequestMeta,
+) {
+  return withTransaction(db, async (tx) => {
+    await assertSupplierExists(tx, fornitoreId);
+    const { rows } = await tx.query(
+      `INSERT INTO albo.fornitore_stato (fornitore_id, stato_id, data_da, created_by) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [fornitoreId, statoId, dataDa, user.id],
+    );
+    const id = rows[0]!.id as number;
+    await audit(tx, user, { azione: 'SUPPLIER_STATE_ADD', entita: 'fornitore_stato', entitaId: id, fornitoreId, dettagli: { statoId, dataDa } }, meta);
+    return { id };
+  });
+}
+
+export async function removeState(db: pg.Pool, user: UserContext, fornitoreId: number, statoRecordId: number, meta: RequestMeta) {
+  return withTransaction(db, async (tx) => {
+    const { rows } = await tx.query(
+      'DELETE FROM albo.fornitore_stato WHERE id = $1 AND fornitore_id = $2 RETURNING stato_id, data_da',
+      [statoRecordId, fornitoreId],
+    );
+    if (!rows[0]) throw notFound('Stato non trovato per questo fornitore');
+    await audit(tx, user, { azione: 'SUPPLIER_STATE_REMOVE', entita: 'fornitore_stato', entitaId: statoRecordId, fornitoreId, dettagli: rows[0] }, meta);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Indirizzi (AddSupplierAddress)
+// ---------------------------------------------------------------------------
+export async function addAddress(db: pg.Pool, user: UserContext, fornitoreId: number, a: AddAddress, meta: RequestMeta) {
+  return withTransaction(db, async (tx) => {
+    await assertSupplierExists(tx, fornitoreId);
+    // Il primo indirizzo è sempre il principale
+    const { rowCount } = await tx.query('SELECT 1 FROM albo.fornitore_indirizzo WHERE fornitore_id = $1 LIMIT 1', [fornitoreId]);
+    const principale = a.principale || !rowCount;
+    if (principale) {
+      await tx.query('UPDATE albo.fornitore_indirizzo SET principale = false WHERE fornitore_id = $1 AND principale', [fornitoreId]);
+    }
+    const { rows } = await tx.query(
+      `INSERT INTO albo.fornitore_indirizzo
+         (fornitore_id, tipo_indirizzo_id, localita_id, indirizzo, cap, telefono, principale, created_by, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8) RETURNING id`,
+      [fornitoreId, a.tipoIndirizzoId, a.localitaId, a.indirizzo, a.cap, a.telefono, principale, user.id],
+    );
+    const id = rows[0]!.id as number;
+    await audit(tx, user, { azione: 'SUPPLIER_ADDRESS_ADD', entita: 'fornitore_indirizzo', entitaId: id, fornitoreId, dettagli: a }, meta);
+    return { id };
+  });
+}
+
+export async function setPrincipalAddress(db: pg.Pool, user: UserContext, fornitoreId: number, addressId: number, meta: RequestMeta) {
+  return withTransaction(db, async (tx) => {
+    const { rowCount } = await tx.query('SELECT 1 FROM albo.fornitore_indirizzo WHERE id = $1 AND fornitore_id = $2 FOR UPDATE', [
+      addressId,
+      fornitoreId,
+    ]);
+    if (!rowCount) throw notFound('Indirizzo non trovato per questo fornitore');
+    await tx.query('UPDATE albo.fornitore_indirizzo SET principale = false WHERE fornitore_id = $1 AND principale', [fornitoreId]);
+    await tx.query('UPDATE albo.fornitore_indirizzo SET principale = true, updated_by = $2 WHERE id = $1', [addressId, user.id]);
+    await audit(tx, user, { azione: 'SUPPLIER_ADDRESS_PRINCIPAL', entita: 'fornitore_indirizzo', entitaId: addressId, fornitoreId }, meta);
+  });
+}
+
+export async function deleteAddress(db: pg.Pool, user: UserContext, fornitoreId: number, addressId: number, meta: RequestMeta) {
+  return withTransaction(db, async (tx) => {
+    const { rows } = await tx.query(
+      'DELETE FROM albo.fornitore_indirizzo WHERE id = $1 AND fornitore_id = $2 RETURNING principale, indirizzo',
+      [addressId, fornitoreId],
+    );
+    if (!rows[0]) throw notFound('Indirizzo non trovato per questo fornitore');
+    // Se era il principale, il più vecchio tra i rimanenti prende il suo posto
+    if (rows[0].principale) {
+      await tx.query(
+        `UPDATE albo.fornitore_indirizzo SET principale = true
+          WHERE id = (SELECT id FROM albo.fornitore_indirizzo WHERE fornitore_id = $1 ORDER BY id LIMIT 1)`,
+        [fornitoreId],
+      );
+    }
+    await audit(tx, user, { azione: 'SUPPLIER_ADDRESS_REMOVE', entita: 'fornitore_indirizzo', entitaId: addressId, fornitoreId, dettagli: rows[0] }, meta);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Preferiti (SetFavourite / UnSetFavourite)
+// ---------------------------------------------------------------------------
+export async function setFavourite(db: Queryable, userId: number, fornitoreId: number, enabled: boolean) {
+  await assertSupplierExists(db, fornitoreId);
+  if (enabled) {
+    await db.query(
+      'INSERT INTO albo.fornitore_preferito (utente_id, fornitore_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [userId, fornitoreId],
+    );
+  } else {
+    await db.query('DELETE FROM albo.fornitore_preferito WHERE utente_id = $1 AND fornitore_id = $2', [userId, fornitoreId]);
+  }
+}
