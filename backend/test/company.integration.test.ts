@@ -1,7 +1,7 @@
 /** Test di integrazione del modulo 2 (struttura societaria). Vedi api.integration.test.ts per l'esecuzione. */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { assertMatch, createTestApp } from './helpers.js';
+import { assertMatch, createTestApp, geoIds } from './helpers.js';
 
 const url = process.env.TEST_DATABASE_URL;
 
@@ -9,8 +9,10 @@ describe('Struttura societaria', { skip: !url && 'TEST_DATABASE_URL non impostat
   let t: Awaited<ReturnType<typeof createTestApp>>;
   const created: { links: number[] } = { links: [] };
 
+  let geo: Awaited<ReturnType<typeof geoIds>>;
   before(async () => {
     t = await createTestApp(url!);
+    geo = await geoIds(t.pool);
   });
   after(async () => {
     // ripristino: il fornitore 1006 non ha struttura, interlocutori, subfornitori né collegamenti nel seed
@@ -45,7 +47,7 @@ describe('Struttura societaria', { skip: !url && 'TEST_DATABASE_URL non impostat
     const vuota = (await t.call('mrossi', 'GET', '/api/fornitori/1006/societa')).json().struttura;
     assert.equal(vuota.versione, null);
     const body = {
-      versione: null, capitaleSociale: 50000, capitaleSocialeValutaId: 1, numeroAddetti: 12, notaNumeroAddetti: '',
+      versione: null, capitaleSociale: 50000, capitaleSocialeValutaId: geo.EUR, numeroAddetti: 12, notaNumeroAddetti: '',
       immobileMq: 800.5, tipoImmobileId: 2, tipologiaOfferta: 'Tomaie', quotaMercatoPrc: 60, quotaMercatoDescrizione: null,
     };
     const ok = await t.call('mrossi', 'PUT', '/api/fornitori/1006/societa/struttura', body);
@@ -106,7 +108,7 @@ describe('Struttura societaria', { skip: !url && 'TEST_DATABASE_URL non impostat
 
   it('subfornitori: aggiunta e modifica', async () => {
     const body = {
-      ragioneSociale: 'Orlatura Test', partitaIva: null, partitaIvaCee: null, codiceFiscale: null, nazioneId: 1, provinciaId: 7,
+      ragioneSociale: 'Orlatura Test', partitaIva: null, partitaIvaCee: null, codiceFiscale: null, nazioneId: geo.IT, provinciaId: geo.FM,
       localita: 'Montegranaro', indirizzo: null, cap: null, telefono: null, numeroAddetti: 6, referenti: null, enteId: 3, fornitoreAlboId: null,
     };
     const add = await t.call('mrossi', 'POST', '/api/fornitori/1006/subfornitori', body);

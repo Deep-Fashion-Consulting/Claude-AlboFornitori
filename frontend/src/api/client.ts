@@ -13,12 +13,10 @@ export class ApiError extends Error {
 
 type QueryValue = string | number | boolean | null | undefined | (string | number)[];
 
-let tokenProvider: () => string | null = () => null;
 let onUnauthorized: () => void = () => {};
 
-/** Collegato dall'AuthProvider: il client non conosce il meccanismo di login. */
-export function configureApi(opts: { getToken: () => string | null; onUnauthorized: () => void }) {
-  tokenProvider = opts.getToken;
+/** Collegato dall'AuthProvider: cosa fare quando la sessione non è più valida. */
+export function configureApi(opts: { onUnauthorized: () => void }) {
   onUnauthorized = opts.onUnauthorized;
 }
 
@@ -33,13 +31,15 @@ export function toQueryString(params: Record<string, QueryValue>): string {
   return s ? `?${s}` : '';
 }
 
+/**
+ * Chiamata all'API. Il cookie di sessione viaggia da solo: frontend e API stanno sullo stesso indirizzo.
+ * `silent401`: un 401 non chiude la sessione (serve al login, dove 401 vuol dire credenziali errate).
+ */
 export async function api<T>(
   path: string,
-  opts: { method?: string; body?: unknown; query?: Record<string, QueryValue>; token?: string } = {},
+  opts: { method?: string; body?: unknown; query?: Record<string, QueryValue>; silent401?: boolean } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
-  const token = opts.token ?? tokenProvider();
-  if (token) headers.Authorization = `Bearer ${token}`;
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
 
   let res: Response;
@@ -47,6 +47,7 @@ export async function api<T>(
     res = await fetch(`${path}${opts.query ? toQueryString(opts.query) : ''}`, {
       method: opts.method ?? 'GET',
       headers,
+      credentials: 'same-origin',
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
   } catch {
@@ -56,14 +57,8 @@ export async function api<T>(
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    if (res.status === 401) onUnauthorized();
-    throw new ApiError(
-      res.status,
-      data?.code ?? 'ERRORE',
-      data?.message ?? `Errore ${res.status}`,
-      data?.details,
-      data?.correlationId,
-    );
+    if (res.status === 401 && !opts.silent401) onUnauthorized();
+    throw new ApiError(res.status, data?.code ?? 'ERRORE', data?.message ?? `Errore ${res.status}`, data?.details, data?.correlationId);
   }
   return data as T;
 }

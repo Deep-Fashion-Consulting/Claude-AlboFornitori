@@ -3,12 +3,13 @@ import { Link, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useGeo, useLookup, useMyEntities, useSupplierSearch } from '../api/queries';
 import { ErrorMessage, Loading } from '../components/Feedback';
+import { useMe } from '../auth/AuthProvider';
 import { Field } from '../components/Field';
 
 type Form = Record<string, string | string[]>;
 
 const ADVANCED = [
-  'partitaIvaCee', 'uf', 'marchioId', 'statoId', 'nazioneId', 'regioneId', 'provinciaId',
+  'partitaIvaCee', 'uf', 'applicativoId', 'marchioId', 'statoId', 'nazioneId', 'regioneId', 'provinciaId',
   'inizioRapportoDa', 'inizioRapportoA', 'fineRapportoDa', 'fineRapportoA', 'rapporto',
   'padriFigli', 'consolidati', 'ordinatoSap', 'ordinatoSt3', 'fatturatoAttivo', 'fatturatoPassivo',
   'enti', 'classiMerceologiche', 'soloPreferiti',
@@ -37,6 +38,8 @@ function toParams(f: Form, pagina = 1): URLSearchParams {
 
 export function SearchPage() {
   const { t } = useTranslation();
+  const me = useMe();
+  const canCreate = me.permessi.scrittura && me.funzioni.includes('FORNITORE_ANAGRAFICA');
   const [searchParams, setSearchParams] = useSearchParams();
   const [form, setForm] = useState<Form>(() => fromParams(searchParams));
   const activeAdvanced = ADVANCED.filter((k) => {
@@ -78,7 +81,14 @@ export function SearchPage() {
 
   return (
     <>
-      <h1 className="page__title">{t('search.title')}</h1>
+      <div className="page__head">
+        <h1 className="page__title">{t('search.title')}</h1>
+        {canCreate && (
+          <Link to="/fornitori/nuovo" className="btn btn--secondary">
+            {t('newSupplier.button')}
+          </Link>
+        )}
+      </div>
 
       <form className="searchform" onSubmit={onSubmit} role="search">
         <div className="searchform__primary">
@@ -102,8 +112,7 @@ export function SearchPage() {
           </Field>
           <TextFilter label={t('search.vat')} name="partitaIva" val={val} set={set} />
           <TextFilter label={t('search.taxCode')} name="codiceFiscale" val={val} set={set} />
-          <TextFilter label={t('search.sap')} name="codiceSap" val={val} set={set} />
-          <TextFilter label={t('search.st3')} name="codiceSt3" val={val} set={set} />
+          <TextFilter label={t('search.externalCode')} name="codiceEsterno" val={val} set={set} />
         </div>
 
         <button
@@ -183,6 +192,7 @@ function AdvancedFilters({
 }) {
   const { t } = useTranslation();
   const marchi = useLookup('marchi');
+  const sistemi = useLookup('applicativi');
   const stati = useLookup('stati-fornitore');
   const classi = useLookup('classi-merceologiche');
   const enti = useMyEntities();
@@ -228,6 +238,7 @@ function AdvancedFilters({
         <div className="grid grid--4">
           <TextFilter label={t('search.vatEu')} name="partitaIvaCee" val={val} set={set} />
           <TextFilter label={t('search.uf')} name="uf" val={val} set={set} />
+          {select('applicativoId', t('search.externalSystem'), sistemi.data)}
           {select('marchioId', t('search.brand'), marchi.data)}
           {select('statoId', t('search.state'), stati.data)}
         </div>
@@ -367,8 +378,7 @@ function ResultsTable({
               <th scope="col">{t('search.col.name')}</th>
               <th scope="col">{t('search.col.vat')}</th>
               <th scope="col">{t('search.col.taxCode')}</th>
-              <th scope="col">{t('search.col.sap')}</th>
-              <th scope="col">{t('search.col.st3')}</th>
+              <th scope="col">{t('search.col.codes')}</th>
               <th scope="col">{t('search.col.state')}</th>
             </tr>
           </thead>
@@ -387,8 +397,7 @@ function ResultsTable({
                 </td>
                 <td className="num">{r.partitaIva ?? r.partitaIvaCee ?? '—'}</td>
                 <td className="num">{r.codiceFiscale ?? '—'}</td>
-                <td className="num">{r.codiciSap ?? '—'}</td>
-                <td className="num">{r.codiciSt3 ?? '—'}</td>
+                <td className="num">{r.codiciEsterni ?? '—'}</td>
                 <td>
                   {r.stato ?? '—'}
                   {!r.attivo && <span className="tag tag--muted">{t('search.endedTag')}</span>}

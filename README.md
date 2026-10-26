@@ -9,7 +9,11 @@ Riscrittura dell'applicazione Albo Fornitori (ASP.NET Web Forms + SQL Server) co
 Il progetto procede a moduli. Sono completati:
 
 - **modulo 1**: accesso, menu in base ai permessi, ricerca fornitori e scheda dati anagrafici;
-- **modulo 2**: struttura societaria (struttura, interlocutori, subfornitori, collegamenti tra fornitori).
+- **modulo 2**: struttura societaria (struttura, interlocutori, subfornitori, collegamenti tra fornitori);
+- **fondamenta, passo 1**: accesso con utente e password gestiti dall'Albo;
+- **fondamenta, passo 2**: creazione dei fornitori e dati identificativi modificabili, con controllo formale di P.IVA e codice fiscale e avviso sui possibili duplicati;
+- **fondamenta, passo 3**: liste di valori gestite dall'amministratore (sistemi esterni, marchi, enti, stati, tipi); codici esterni, marchi ed enti modificabili dalla scheda del fornitore; menu e gruppi predefiniti inclusi nel database, senza bisogno dei dati di prova;
+- **fondamenta, passo 4**: dati geografici completi (tutte le nazioni, regioni, province e comuni italiani ISTAT, valute); indirizzi esteri con località scritta a mano.
 
 ## Avvio in locale
 
@@ -30,14 +34,14 @@ npm run dev:backend    # API su http://localhost:3000
 npm run dev:frontend   # interfaccia su http://localhost:5173
 ```
 
-Apri http://localhost:5173 e accedi con uno degli utenti di prova. In locale non c'è password: il login di sviluppo è attivo solo con `AUTH_MODE=dev` ed è rifiutato all'avvio se `NODE_ENV=production`.
+Apri http://localhost:5173 e accedi con uno degli utenti di prova. La password è **`Prova2026!`** per tutti; è caricata da `db/seed/920_dev_password.sql`.
 
 | Utente | Cosa vede |
 | --- | --- |
 | `admin` | Tutte le funzioni e tutti gli enti, può modificare |
 | `mrossi` | Lettura e modifica; abilitato sugli enti Pelletteria e Calzature |
 | `lbianchi` | Sola lettura, nessun ente, interfaccia in inglese |
-| `exutente` | Utente disattivato: l'accesso viene negato |
+| `exutente` | Utente disattivato: l'accesso viene negato con lo stesso messaggio di una password sbagliata |
 
 La documentazione delle API è su http://localhost:3000/docs.
 
@@ -62,6 +66,31 @@ for %f in (db\migrations\0*.sql db\seed\*.sql) do %PSQL% -U albo -d albo -v ON_E
 
 ```bat
 %PSQL% -U albo -d albo -v ON_ERROR_STOP=1 -f db\seed\910_dev_seed_modulo2.sql
+```
+
+Per l'accesso con password, su un database creato prima di questa versione:
+
+```bat
+%PSQL% -U albo -d albo -v ON_ERROR_STOP=1 -f db\migrations\007_auth_locale.sql
+%PSQL% -U albo -d albo -v ON_ERROR_STOP=1 -f db\seed\920_dev_password.sql
+```
+
+Per la creazione dei fornitori:
+
+```bat
+%PSQL% -U albo -d albo -v ON_ERROR_STOP=1 -f db\migrations\008_fornitore_albo_master.sql
+```
+
+Per liste di valori, codici esterni, marchi ed enti:
+
+```bat
+%PSQL% -U albo -d albo -v ON_ERROR_STOP=1 -f db\migrations\009_configurazione_prodotto.sql
+```
+
+Per i dati geografici completi (riconosce e completa le località di prova già presenti, senza doppioni):
+
+```bat
+%PSQL% -U albo -d albo -v ON_ERROR_STOP=1 -f db\migrations\010_dati_geografici.sql
 ```
 
 ## Comandi
@@ -95,7 +124,8 @@ db/
   init/              script usato da docker compose al primo avvio
 backend/src/
   app.ts             composizione dell'applicazione Fastify
-  auth/              verifica token (OIDC o sviluppo), utente corrente, permessi
+  auth/              password (scrypt), sessioni, utente corrente, permessi
+  cli/               comando `utente` per creare l'amministratore e reimpostare password
   modules/session/   avvio sessione, utente corrente, lingua, menu
   modules/lookups/   liste di valori e geografia a cascata
   modules/suppliers/ ricerca, intestazione, dati anagrafici, stati, indirizzi, preferiti
@@ -113,8 +143,8 @@ frontend/src/
 
 | Legacy | Nuova versione |
 | --- | --- |
-| Windows Authentication su IIS | Login OIDC (es. Microsoft Entra ID); il token è verificato dal backend a ogni richiesta |
-| `Session("IGPSESS")` | Utente letto dal token e risolto su `iam.utente`, con permessi ed enti |
+| Windows Authentication su IIS | Utente e password gestiti dall'Albo; sessione nel database con cookie protetto |
+| `Session("IGPSESS")` | Utente della sessione caricato da `iam.utente` a ogni richiesta, con permessi ed enti |
 | `Session("IDFornitore")` | Fornitore nell'URL (`/fornitori/:id/...`); la fascia in alto lo mantiene come contesto anche tornando alla ricerca |
 | Menu da `VIEW_AbilitazioniFunzioni` | `GET /api/menu`: stesse regole, controllate anche lato server su ogni API |
 | SQL concatenato | Query parametrizzate; c'è un test dedicato all'SQL injection |
@@ -128,34 +158,51 @@ Altri comportamenti nuovi:
 - **Errori tracciabili.** Ogni errore riporta un codice di correlazione, lo stesso che compare nei log del server.
 - **Valutazioni per ente.** Nella scheda, la valutazione è visibile solo per gli enti su cui l'utente è abilitato.
 
-## Andare in produzione con OIDC
+## Accesso e sicurezza delle password
 
-1. Registra due applicazioni nel provider: una **SPA** per il frontend (redirect URI `https://<host>/auth/callback`) e un'**API** per il backend, con uno scope esposto.
-2. Imposta nel `.env`:
+Ogni installazione gestisce i propri utenti con nome utente e password.
 
-   ```
-   NODE_ENV=production
-   AUTH_MODE=oidc
-   OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0
-   OIDC_AUDIENCE=api://albo-fornitori
-   OIDC_USERNAME_CLAIM=preferred_username
-   OIDC_STRIP_UPN_DOMAIN=true
+- **Password:** salvate con *scrypt*, incluso in Node, mai in chiaro. Minimo 10 caratteri, senza il nome utente.
+- **Sessione:** un cookie `HttpOnly` e `SameSite=Strict`, non leggibile dal JavaScript della pagina e mai inviato da altri siti. Nel database c'è solo l'hash del token. Scade dopo `SESSION_IDLE_MINUTES` di inattività (predefinito 120) e comunque dopo `SESSION_MAX_HOURS` (predefinito 12).
+- **Tentativi falliti:** dopo 5 accessi falliti l'account si blocca per 15 minuti. Password errata, utente inesistente e utente disattivato ricevono lo stesso messaggio, così non si scopre quali nomi utente esistono.
+- **Cambio password:** dal nome in alto a destra. Dopo il cambio, le sessioni aperte su altri dispositivi vengono chiuse.
+- **Audit:** accessi riusciti e falliti (con il motivo) e cambi password finiscono in `audit.log`.
 
-   VITE_AUTH_MODE=oidc
-   VITE_OIDC_AUTHORITY=https://login.microsoftonline.com/<tenant-id>/v2.0
-   VITE_OIDC_CLIENT_ID=<client-id-della-SPA>
-   VITE_OIDC_SCOPE=openid profile api://albo-fornitori/access
-   ```
+### Primo avvio in produzione
 
-3. **Abbinamento degli utenti esistenti.** Al primo accesso l'utente viene cercato per username: lo username viene tolto dal dominio (`mario.rossi@azienda.it` → `mario.rossi`) e messo in minuscolo, come faceva il legacy con `DOMINIO\utente`. Da quel momento resta legato all'identificativo OIDC. Se gli username legacy non coincidono con la parte locale dell'UPN, va preparata una tabella di corrispondenza prima della migrazione degli utenti.
+In produzione si eseguono solo le migrazioni di `db/migrations`, non i file di `db/seed`: non esistono utenti né password predefiniti. Le migrazioni creano già il menu e due gruppi di permessi, `AMMINISTRAZIONE` (tutto) e `CONSULTAZIONE` (tutto tranne l'amministrazione). Dopo la build, sul server, dalla cartella `backend`:
 
-Il flusso OIDC compila ed è completo, ma **non è stato provato con un provider reale**: va collaudato sul vostro tenant.
+```
+npm run utente -- crea-admin <username> <nome> <cognome>
+```
+
+La password viene chiesta a schermo, due volte, e non viene mostrata mentre la scrivi. L'utente creato fa parte del gruppo `AMMINISTRAZIONE` ed è abilitato su tutti gli enti.
+
+Per reimpostare la password di un utente che l'ha dimenticata:
+
+```
+npm run utente -- password <username>
+```
+
+Il comando chiude anche le sue sessioni aperte. In sviluppo, senza build, si usa `npm run utente:dev -- ...`.
+
+Al primo accesso l'amministratore configura da *Amministrazione → Liste di valori*:
+- i **sistemi esterni** del cliente in cui i fornitori hanno un codice (ERP, gestionali);
+- i **marchi**;
+- gli **enti** (unità di business);
+- gli **stati** del fornitore e i vari **tipi** (indirizzo, interlocutore, immobile).
+
+Le voci non si cancellano: si disattivano. Chi crea un ente viene abilitato subito su quell'ente; gli altri utenti per ora vanno abilitati via SQL in `iam.utente_ente`, in attesa della pagina di gestione utenti.
+
+### HTTPS
+
+In produzione il cookie di sessione viaggia **solo su HTTPS**: il sito va pubblicato con un certificato. Su IIS si configura come per qualsiasi altro sito. Per una prova interna su HTTP si può impostare `COOKIE_SECURE=false` nel `.env`, sapendo che le password viaggeranno in chiaro sulla rete.
 
 ## Stato dei moduli
 
 **Verificato:**
 
-- 48 test automatici: 10 unitari e 38 di integrazione su PostgreSQL;
+- 80 test automatici: 18 unitari e 62 di integrazione su PostgreSQL;
 - 32 flussi provati nel browser, tra cui: salvataggio e conflitto tra due utenti, indirizzo estero, utente in sola lettura in inglese, utente disattivato, menu su mobile, collegamenti visti da entrambi i fornitori.
 
 **Non incluso, previsto nei moduli successivi:**
@@ -174,10 +221,14 @@ Regole seguite nella scelta delle versioni:
 
 - **Versioni corrette.** Per ogni libreria si usa l'ultima versione corretta della serie in uso, cioè senza vulnerabilità note secondo `npm audit`.
 - **Almeno due settimane di vita.** Si usano solo versioni pubblicate da almeno 14 giorni, per ridurre il rischio di installare un rilascio compromesso prima che venga scoperto. Le dipendenze indirette troppo recenti sono bloccate nella sezione `overrides` del `package.json` principale.
-- **Eccezione per le correzioni di sicurezza.** Una correzione di sicurezza prevale sulla regola delle due settimane, dopo aver verificato che sia pubblicata dal manutentore abituale. Eccezione attuale: `source-map-js` 1.2.2, usato solo nella build del frontend.
+- **Eccezione per le correzioni di sicurezza.** Una correzione di sicurezza prevale sulla regola delle due settimane, dopo aver verificato che sia pubblicata dal manutentore abituale o con certificato di provenienza dal repository ufficiale. Eccezioni attuali (ottobre 2026):
+  - `fastify` 5.12.7: aggiramento della validazione delle intestazioni HTTP;
+  - `fast-uri` 3.1.9 e 4.2.3: interpretazione errata degli indirizzi, usato nella validazione delle richieste.
+
+  `zod` 4.6.6 (esaurimento della memoria con richieste costruite apposta) era già oltre le due settimane.
 - **Nessuna libreria di test esterna.** I test usano il runner integrato in Node (`node:test`).
 
-Prima di ogni rilascio:
+Le vulnerabilità vengono scoperte di continuo: lo stesso progetto può passare da 0 a qualche segnalazione in pochi giorni senza che nessuno abbia toccato il codice. Per questo `npm audit` va lanciato regolarmente, e sempre prima di ogni rilascio:
 
 ```bash
 npm audit
@@ -186,3 +237,25 @@ npm audit
 Non usare `npm audit fix --force`: aggiorna anche a versioni maggiori incompatibili e può rompere il progetto. Gli aggiornamenti vanno fatti modificando le versioni nei `package.json`, poi con `npm install`, i test e una prova dell'applicazione.
 
 Il `package.json` principale dichiara la versione minima di Node (`engines`). Con una versione inferiore alla 22.12, `npm install` mostra un avviso `EBADENGINE`: in quel caso aggiorna Node prima di proseguire.
+
+## Dati geografici: fonti e aggiornamento
+
+La migrazione `010_dati_geografici.sql` contiene 250 nazioni, le 20 regioni, le 107 province, tutti i comuni italiani e 161 valute. È generata da `db/tools/genera-dati-geografici.mjs` a partire da fonti con licenza che ne consente l'uso nel prodotto:
+
+| Dati | Fonte | Licenza |
+| --- | --- | --- |
+| Regioni, province, comuni (codice ISTAT e catastale) | ISTAT, *Elenco dei comuni italiani* | CC BY 4.0: **va citata la fonte** nella documentazione consegnata ai clienti |
+| Nomi di nazioni e valute in italiano e inglese | Unicode CLDR, inclusa in Node | Licenza Unicode |
+| Codici ISO alpha-3 e continente delle nazioni | Wikidata | CC0 |
+
+Per i comuni bilingui si usa la denominazione ufficiale completa, per esempio *Bolzano/Bozen*. I **CAP non sono inclusi**: non esiste una fonte aperta ufficiale, perché appartengono a Poste Italiane. Si scrivono nell'indirizzo.
+
+Per gli **indirizzi esteri** non esiste un elenco ufficiale delle località: si scrivono a mano. La prima volta vengono aggiunte all'elenco, poi vengono suggerite e riusate, senza distinguere maiuscole e spazi. In Italia il comune si sceglie sempre dall'elenco ISTAT.
+
+**Aggiornare i comuni.** L'ISTAT aggiorna l'elenco più volte l'anno, per fusioni e nuovi comuni. Per aggiornare, con accesso a internet:
+
+```bash
+node db/tools/genera-dati-geografici.mjs > db/migrations/0NN_dati_geografici_AAAA_MM.sql
+```
+
+Si salva come nuova migrazione numerata, senza modificare la 010. La migrazione si può eseguire più volte senza danni: aggiorna le voci esistenti e aggiunge le nuove. I comuni soppressi restano nel database, perché gli indirizzi già registrati li usano.

@@ -18,10 +18,13 @@ INSERT INTO ref.tipo_interlocutore (id, codice, descrizione_it, descrizione_en, 
 
 INSERT INTO albo.fornitore_struttura (fornitore_id, capitale_sociale, capitale_sociale_valuta_id, capitale_versato,
   capitale_versato_valuta_id, numero_addetti, nota_numero_addetti, immobile_mq, tipo_immobile_id,
-  tipologia_offerta, quota_mercato_prc, quota_mercato_descrizione) VALUES
-  (1001, 100000, 1, 100000, 1, 48, 'Più 9 addetti presso il subfornitore di taglio', 2400, 1,
-   'Borse e piccola pelletteria di fascia alta', 35, 'Circa un terzo del fatturato è verso il gruppo'),
-  (1002, 1500000, 1, 1500000, 1, 130, NULL, 12000, 1, 'Pellami bovini e ovini per pelletteria e calzatura', 12, NULL);
+  tipologia_offerta, quota_mercato_prc, quota_mercato_descrizione)
+SELECT v.f, v.cap, eur.id, v.cap, eur.id, v.add, v.nota, v.mq, 1, v.offerta, v.quota, v.quota_nota
+  FROM (VALUES
+    (1001, 100000, 48, 'Più 9 addetti presso il subfornitore di taglio', 2400, 'Borse e piccola pelletteria di fascia alta', 35, 'Circa un terzo del fatturato è verso il gruppo'),
+    (1002, 1500000, 130, NULL, 12000, 'Pellami bovini e ovini per pelletteria e calzatura', 12, NULL)
+  ) AS v(f, cap, add, nota, mq, offerta, quota, quota_nota)
+  CROSS JOIN (SELECT id FROM ref.valuta WHERE codice = 'EUR') eur;
 
 INSERT INTO albo.fornitore_interlocutore (fornitore_id, tipo_interlocutore_id, nominativo, email, telefono, cellulare) VALUES
   (1001, 1, 'Giovanni Bartolini', 'g.bartolini@pellscandicci.example', '+39 055 7350001', '+39 335 1234567'),

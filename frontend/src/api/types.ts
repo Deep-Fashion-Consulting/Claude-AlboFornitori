@@ -36,8 +36,7 @@ export interface SupplierSummary {
   partitaIvaCee: string | null;
   codiceFiscale: string | null;
   email: string | null;
-  codiciSap: string | null;
-  codiciSt3: string | null;
+  codiciEsterni: string | null;
   stato: string | null;
   attivo: boolean;
   preferito: boolean;
@@ -110,12 +109,29 @@ export interface SupplierGeneral {
   stati: { id: number; statoId: number; descrizione: string; dataDa: string; corrente: boolean }[];
   indirizzi: Address[];
   enti: { enteId: number; descrizione: string; autorizzato: boolean; valutazioneGenerale: number | null }[];
-  codiciApplicativi: { applicativo: string; codice: string }[];
-  marchi: { marchio: string; divisione: string | null }[];
+  codiciApplicativi: { id: number; applicativoId: number; applicativo: string; codice: string }[];
+  marchi: { id: number; marchioId: number; marchio: string; divisione: string | null }[];
   preferito: boolean;
 }
 
-export type UpdateGeneral = Omit<GeneralData, 'responsabileCodice'> & { versione: string };
+/** Campi identificativi modificabili */
+export interface Identita {
+  ragioneSociale: string;
+  partitaIva: string | null;
+  partitaIvaCee: string | null;
+  codiceFiscale: string | null;
+  telefono: string | null;
+}
+
+export type UpdateGeneral = Omit<GeneralData, 'responsabileCodice'> &
+  Identita & { fax: string | null; versione: string; confermaDuplicato?: boolean };
+
+export type NewSupplier = Identita & { email: string | null; confermaDuplicato?: boolean };
+
+/** details dell'errore 409 POSSIBILE_DUPLICATO */
+export interface DuplicateDetails {
+  fornitori: { id: number; ragioneSociale: string }[];
+}
 
 // ------------------------------------------------------------ modulo 2: società
 export interface Struttura {
@@ -176,4 +192,18 @@ export interface Societa {
   interlocutori: Interlocutore[];
   subfornitori: Subfornitore[];
   collegamenti: Collegamento[];
+}
+
+// ------------------------------------------------------- liste di valori (admin)
+export interface ListaValori {
+  nome: string;
+  descrizione: string;
+}
+export interface VoceLista {
+  id: number;
+  codice: string | null;
+  descrizioneIt: string;
+  descrizioneEn: string | null;
+  ordine: number;
+  attivo: boolean;
 }

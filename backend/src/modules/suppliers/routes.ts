@@ -5,10 +5,15 @@ import { requireFunction, requireRead, requireWrite } from '../../auth/authz.js'
 import { currentUser } from '../../auth/plugin.js';
 import { forbidden } from '../../errors.js';
 import * as repo from './repository.js';
+import * as cls from './classification.js';
 import {
   AddAddressBody,
+  AddBrandBody,
+  AddCodeBody,
+  AddEntityBody,
   AddStateBody,
   CreatedSchema,
+  CreateSupplierBody,
   SearchResultSchema,
   SupplierGeneralSchema,
   SupplierHeaderSchema,
@@ -58,6 +63,26 @@ export default async function supplierRoutes(appBase: FastifyInstance) {
       const nonAbilitati = (criteria.enti ?? []).filter((e) => !user.enti.includes(e));
       if (nonAbilitati.length) throw forbidden('ENTE_NON_AUTORIZZATO', 'Hai selezionato enti su cui non sei abilitato');
       return repo.searchSuppliers(app.db, user, criteria);
+    },
+  );
+
+  // -------------------------------------------------------------- creazione
+  app.post(
+    '/',
+    {
+      schema: {
+        tags,
+        summary: 'Crea un nuovo fornitore',
+        description:
+          'Se esistono fornitori con la stessa P.IVA, P.IVA CEE o codice fiscale risponde 409 POSSIBILE_DUPLICATO ' +
+          'con l’elenco in details.fornitori; per creare comunque si ripete la richiesta con confermaDuplicato = true.',
+        body: CreateSupplierBody,
+        response: { 201: CreatedSchema },
+      },
+    },
+    async (request, reply) => {
+      const created = await repo.createSupplier(app.db, writer(request, ANAGRAFICA), request.body, meta(request));
+      return reply.status(201).send(created);
     },
   );
 
@@ -186,6 +211,75 @@ export default async function supplierRoutes(appBase: FastifyInstance) {
     async (request, reply) => {
       const user = writer(request, ANAGRAFICA);
       await repo.setPrincipalAddress(app.db, user, request.params.id, request.params.indirizzoId, meta(request));
+      return reply.status(204).send(null);
+    },
+  );
+
+  // ------------------------------------------- codici esterni, marchi, enti
+  const RowParams = SupplierIdParams.extend({ rowId: z.coerce.number().int().positive() });
+
+  app.post(
+    '/:id/codici',
+    { schema: { tags, summary: 'Aggiungi un codice in un sistema esterno', params: SupplierIdParams, body: AddCodeBody, response: { 201: CreatedSchema } } },
+    async (request, reply) => {
+      const user = writer(request, ANAGRAFICA);
+      return reply.status(201).send(await cls.addCode(app.db, user, request.params.id, request.body.applicativoId, request.body.codice, meta(request)));
+    },
+  );
+  app.delete(
+    '/:id/codici/:rowId',
+    { schema: { tags, summary: 'Togli un codice esterno', params: RowParams, response: { 204: z.null() } } },
+    async (request, reply) => {
+      await cls.removeCode(app.db, writer(request, ANAGRAFICA), request.params.id, request.params.rowId, meta(request));
+      return reply.status(204).send(null);
+    },
+  );
+  app.post(
+    '/:id/marchi',
+    { schema: { tags, summary: 'Aggiungi un marchio', params: SupplierIdParams, body: AddBrandBody, response: { 201: CreatedSchema } } },
+    async (request, reply) => {
+      const user = writer(request, ANAGRAFICA);
+      return reply.status(201).send(await cls.addBrand(app.db, user, request.params.id, request.body.marchioId, meta(request)));
+    },
+  );
+  app.delete(
+    '/:id/marchi/:rowId',
+    { schema: { tags, summary: 'Togli un marchio', params: RowParams, response: { 204: z.null() } } },
+    async (request, reply) => {
+      await cls.removeBrand(app.db, writer(request, ANAGRAFICA), request.params.id, request.params.rowId, meta(request));
+      return reply.status(204).send(null);
+    },
+  );
+  app.post(
+    '/:id/enti',
+    {
+      schema: {
+        tags,
+        summary: 'Associa il fornitore a un ente',
+        description: 'Solo per gli enti su cui l’utente è abilitato.',
+        params: SupplierIdParams,
+        body: AddEntityBody,
+        response: { 204: z.null() },
+      },
+    },
+    async (request, reply) => {
+      await cls.addEntity(app.db, writer(request, ANAGRAFICA), request.params.id, request.body.enteId, meta(request));
+      return reply.status(204).send(null);
+    },
+  );
+  app.delete(
+    '/:id/enti/:rowId',
+    {
+      schema: {
+        tags,
+        summary: 'Togli l’associazione con un ente',
+        description: '409 ENTE_CON_DATI se per l’ente ci sono produzione o valutazioni. rowId è l’id dell’ente.',
+        params: RowParams,
+        response: { 204: z.null() },
+      },
+    },
+    async (request, reply) => {
+      await cls.removeEntity(app.db, writer(request, ANAGRAFICA), request.params.id, request.params.rowId, meta(request));
       return reply.status(204).send(null);
     },
   );

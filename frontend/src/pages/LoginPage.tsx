@@ -1,70 +1,74 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { AUTH_MODE, useAuth } from '../auth/AuthProvider';
-
-const TEST_USERS = [
-  { username: 'admin', descr: 'Amministratore: tutte le funzioni, tutti gli enti' },
-  { username: 'mrossi', descr: 'Buyer: lettura e modifica, enti Pelletteria e Calzature' },
-  { username: 'lbianchi', descr: 'Consultazione: sola lettura, nessun ente, interfaccia in inglese' },
-  { username: 'exutente', descr: 'Utente disattivato: accesso negato' },
-];
+import { useAuth } from '../auth/AuthProvider';
+import { useErrorText } from '../components/Feedback';
+import { Field } from '../components/Field';
 
 export function LoginPage() {
   const { t } = useTranslation();
-  const { status, notice, signInDev, signInOidc } = useAuth();
+  const { status, notice, signIn } = useAuth();
+  const errorText = useErrorText();
   const location = useLocation();
-  const [username, setUsername] = useState('mrossi');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const returnTo = (location.state as { from?: string } | null)?.from ?? '/fornitori';
 
   if (status === 'authenticated') return <Navigate to={returnTo} replace />;
 
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setPending(true);
+    setError(null);
+    try {
+      await signIn(username, password);
+    } catch (err) {
+      setError(errorText(err));
+      setPassword('');
+    } finally {
+      setPending(false);
+    }
+  };
+
   return (
     <main className="login">
-      <div className="login__panel">
+      <form className="login__panel" onSubmit={onSubmit}>
         <p className="login__brand">{t('app.title')}</p>
-        {notice && (
+        <h1 className="login__title">{t('auth.title')}</h1>
+        {(error ?? notice) && (
           <p className="notice notice--error" role="alert">
-            {notice}
+            {error ?? notice}
           </p>
         )}
-        {AUTH_MODE === 'oidc' ? (
-          <button type="button" className="btn btn--primary" onClick={() => void signInOidc(returnTo)}>
-            {t('auth.signInCompany')}
-          </button>
-        ) : (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void signInDev(username);
-            }}
-          >
-            <h1 className="login__title">{t('auth.devTitle')}</h1>
-            <p className="login__hint">{t('auth.devHint')}</p>
-            <fieldset className="login__users">
-              <legend className="visually-hidden">{t('auth.username')}</legend>
-              {TEST_USERS.map((u) => (
-                <label key={u.username} className="login__user">
-                  <input
-                    type="radio"
-                    name="username"
-                    value={u.username}
-                    checked={username === u.username}
-                    onChange={() => setUsername(u.username)}
-                  />
-                  <span>
-                    <strong>{u.username}</strong>
-                    <span className="login__userdescr">{u.descr}</span>
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-            <button type="submit" className="btn btn--primary" disabled={status === 'loading'}>
-              {status === 'loading' ? t('auth.signingIn') : t('auth.signIn')}
-            </button>
-          </form>
+        <div className="login__fields">
+          <Field label={t('auth.username')}>
+            {(p) => (
+              <input {...p} value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus required />
+            )}
+          </Field>
+          <Field label={t('auth.password')}>
+            {(p) => (
+              <input
+                {...p}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            )}
+          </Field>
+        </div>
+        <button type="submit" className="btn btn--primary" disabled={pending || !username || !password}>
+          {pending ? t('auth.signingIn') : t('auth.signIn')}
+        </button>
+        {/* Solo in sviluppo: la build di produzione elimina questo blocco */}
+        {import.meta.env.DEV && (
+          <p className="login__hint">Sviluppo: utenti di prova admin, mrossi, lbianchi; password Prova2026!</p>
         )}
-      </div>
+      </form>
     </main>
   );
 }

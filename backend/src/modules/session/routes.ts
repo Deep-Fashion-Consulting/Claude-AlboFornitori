@@ -1,12 +1,28 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { audit } from '../../audit.js';
 import { authorizedEntities } from '../../auth/authz.js';
+import { normalizeUsername, type UserContext } from '../../auth/context.js';
+import { DUMMY_HASH, hashPassword, passwordProblem, verifyPassword } from '../../auth/password.js';
 import { currentUser } from '../../auth/plugin.js';
-import type { UserContext } from '../../auth/context.js';
-import { forbidden, notFound } from '../../errors.js';
+import {
+  clearedSessionCookie,
+  createSession,
+  deleteOtherSessions,
+  deleteSession,
+  readCookie,
+  SESSION_COOKIE,
+  sessionCookie,
+  useSession,
+} from '../../auth/sessions.js';
+import { loadActiveUser } from '../../auth/users.js';
+import { badRequest, forbidden, notFound, unauthorized } from '../../errors.js';
 import { buildMenu, type FunzioneRow, type MenuNode } from './menu.js';
+
+/** Tentativi falliti consecutivi prima del blocco, e durata del blocco */
+const MAX_FAILED = 5;
+const LOCK_MINUTES = 15;
 
 const Lingua = z.enum(['IT', 'EN']);
 
@@ -40,56 +56,136 @@ function toMe(u: UserContext): z.infer<typeof MeSchema> {
   };
 }
 
+const meta = (request: FastifyRequest) => ({ ip: request.ip, correlationId: String(request.id) });
+
 export default async function sessionRoutes(appBase: FastifyInstance) {
   const app = appBase.withTypeProvider<ZodTypeProvider>();
 
-  // Solo AUTH_MODE=dev: emette un token per uno username esistente, senza password.
-  if (app.devTokens) {
-    const devTokens = app.devTokens;
-    app.post(
-      '/auth/dev-login',
-      {
-        config: { public: true },
-        schema: {
-          tags: ['sessione'],
-          summary: 'Login di sviluppo (solo AUTH_MODE=dev)',
-          body: z.object({ username: z.string().min(1).max(150) }),
-          response: { 200: z.object({ token: z.string() }) },
-        },
-      },
-      async (request) => ({ token: await devTokens.issue(request.body.username.trim().toLowerCase()) }),
-    );
-  }
-
-  // Avvio sessione (StartSession): lega il subject OIDC, registra accesso e audit.
+  // ------------------------------------------------------------------ login
   app.post(
-    '/session',
+    '/auth/login',
     {
-      config: { allowUnknownUser: true },
-      schema: { tags: ['sessione'], summary: 'Avvia la sessione applicativa', response: { 200: MeSchema } },
+      config: { public: true },
+      schema: {
+        tags: ['sessione'],
+        summary: 'Accesso con nome utente e password',
+        body: z.object({ username: z.string().min(1).max(150), password: z.string().min(1).max(200) }),
+        response: { 200: MeSchema },
+      },
     },
-    async (request) => {
-      const meta = { ip: request.ip, correlationId: String(request.id) };
-      const user = request.resolvedUser;
-      if (!user) {
-        await audit(app.db, null, { azione: 'LOGIN_DENIED', dettagli: { username: request.identity?.username } }, meta);
-        throw forbidden('UTENTE_NON_ABILITATO', "L'utente non è abilitato all'Albo fornitori");
-      }
-      const bind = request.identity?.bindSubject && !user.oidcSubject ? request.identity.subject : null;
-      await app.db.query(
-        `UPDATE iam.utente SET ultimo_accesso = now(), oidc_subject = COALESCE($2, oidc_subject) WHERE id = $1`,
-        [user.id, bind],
+    async (request, reply) => {
+      const username = normalizeUsername(request.body.username);
+      const { rows } = await app.db.query(
+        `SELECT id, password_hash, attivo, bloccato_fino_al > now() AS bloccato FROM iam.utente WHERE username = $1`,
+        [username],
       );
-      if (bind) app.userCache.invalidateUser(user.id);
-      await audit(app.db, user, { azione: 'LOGIN' }, meta);
+      const u = rows[0];
+      // La verifica si fa sempre, anche se l'utente non esiste: i tempi di risposta non rivelano nulla
+      const passwordOk = await verifyPassword(request.body.password, u?.password_hash ?? DUMMY_HASH);
+      const denied = (motivo: string) =>
+        audit(app.db, u ? { id: u.id, username } : null, { azione: 'LOGIN_FAILED', dettagli: { username, motivo } }, meta(request));
+
+      if (u?.bloccato) {
+        await denied('bloccato');
+        throw forbidden('ACCOUNT_BLOCCATO', `Troppi tentativi falliti: riprova tra ${LOCK_MINUTES} minuti`);
+      }
+      if (!u || !u.password_hash || !passwordOk || !u.attivo) {
+        if (u && !passwordOk) {
+          // Se un blocco precedente è scaduto, il conteggio riparte da questo tentativo
+          await app.db.query(
+            `UPDATE iam.utente u
+                SET tentativi_falliti = c.n,
+                    bloccato_fino_al = CASE WHEN c.n >= $2 THEN now() + make_interval(mins => $3) END
+               FROM (SELECT CASE WHEN bloccato_fino_al IS NOT NULL THEN 1 ELSE tentativi_falliti + 1 END AS n
+                       FROM iam.utente WHERE id = $1) c
+              WHERE u.id = $1`,
+            [u.id, MAX_FAILED, LOCK_MINUTES],
+          );
+        }
+        await denied(!u ? 'utente inesistente' : !passwordOk ? 'password errata' : !u.attivo ? 'utente disattivato' : 'senza password');
+        // Stesso messaggio in tutti i casi: non si rivela quali nomi utente esistono
+        throw unauthorized('Nome utente o password non corretti');
+      }
+
+      await app.db.query(
+        'UPDATE iam.utente SET tentativi_falliti = 0, bloccato_fino_al = NULL, ultimo_accesso = now() WHERE id = $1',
+        [u.id],
+      );
+      const user = await loadActiveUser(app.db, u.id);
+      if (!user) throw unauthorized('Nome utente o password non corretti');
+      const token = await createSession(app.db, u.id, app.sessionSettings, {
+        ip: request.ip,
+        userAgent: request.headers['user-agent'],
+      });
+      await audit(app.db, user, { azione: 'LOGIN' }, meta(request));
+      reply.header('set-cookie', sessionCookie(token, app.sessionSettings));
       return toMe(user);
     },
   );
 
+  // ------------------------------------------- stato della sessione (pubblico)
+  // All'apertura della pagina il frontend chiede se c'è già una sessione valida.
+  // Risponde sempre 200, così il browser non registra un errore quando non si è ancora entrati.
+  app.get(
+    '/auth/stato',
+    {
+      config: { public: true },
+      schema: { tags: ['sessione'], summary: 'Utente della sessione corrente, se presente', response: { 200: z.object({ utente: MeSchema.nullable() }) } },
+    },
+    async (request) => {
+      const token = readCookie(request.headers.cookie, SESSION_COOKIE);
+      const userId = token ? await useSession(app.db, token, app.sessionSettings) : null;
+      const user = userId ? await loadActiveUser(app.db, userId) : null;
+      return { utente: user ? toMe(user) : null };
+    },
+  );
+
+  // ----------------------------------------------------------------- logout
+  app.post(
+    '/auth/logout',
+    { config: { public: true }, schema: { tags: ['sessione'], summary: 'Esci', response: { 204: z.null() } } },
+    async (request, reply) => {
+      const token = readCookie(request.headers.cookie, SESSION_COOKIE);
+      if (token) await deleteSession(app.db, token);
+      reply.header('set-cookie', clearedSessionCookie(app.sessionSettings));
+      return reply.status(204).send(null);
+    },
+  );
+
+  // --------------------------------------------------------- utente corrente
   app.get(
     '/me',
     { schema: { tags: ['sessione'], summary: 'Utente corrente', response: { 200: MeSchema } } },
     async (request) => toMe(currentUser(request)),
+  );
+
+  app.put(
+    '/me/password',
+    {
+      schema: {
+        tags: ['sessione'],
+        summary: 'Cambia la propria password',
+        body: z.object({ attuale: z.string().min(1).max(200), nuova: z.string().max(200) }),
+        response: { 204: z.null() },
+      },
+    },
+    async (request, reply) => {
+      const user = currentUser(request);
+      const { rows } = await app.db.query('SELECT password_hash FROM iam.utente WHERE id = $1', [user.id]);
+      if (!rows[0]?.password_hash || !(await verifyPassword(request.body.attuale, rows[0].password_hash))) {
+        throw badRequest('PASSWORD_ATTUALE_ERRATA', 'La password attuale non è corretta');
+      }
+      const problem = passwordProblem(request.body.nuova, user.username);
+      if (problem) throw badRequest('PASSWORD_DEBOLE', problem);
+      await app.db.query('UPDATE iam.utente SET password_hash = $2, password_cambiata_il = now() WHERE id = $1', [
+        user.id,
+        await hashPassword(request.body.nuova),
+      ]);
+      // Chi conosceva la vecchia password perde l'accesso: restano solo questa sessione
+      await deleteOtherSessions(app.db, user.id, request.sessionToken!);
+      await audit(app.db, user, { azione: 'PASSWORD_CHANGED' }, meta(request));
+      return reply.status(204).send(null);
+    },
   );
 
   app.put(
@@ -105,7 +201,6 @@ export default async function sessionRoutes(appBase: FastifyInstance) {
     async (request, reply) => {
       const user = currentUser(request);
       await app.db.query('UPDATE iam.utente SET lingua = $2 WHERE id = $1', [user.id, request.body.lingua]);
-      app.userCache.invalidateUser(user.id);
       return reply.status(204).send(null);
     },
   );
@@ -133,6 +228,7 @@ export default async function sessionRoutes(appBase: FastifyInstance) {
     },
   );
 
+  // ------------------------------------------------------------------- menu
   app.get(
     '/menu',
     {

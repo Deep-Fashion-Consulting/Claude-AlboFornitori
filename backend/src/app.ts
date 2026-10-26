@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
-import cors from '@fastify/cors';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import fp from 'fastify-plugin';
@@ -15,17 +14,16 @@ import type { Config } from './config.js';
 import { createPool } from './db.js';
 import { errorHandler } from './errors.js';
 import authPlugin from './auth/plugin.js';
-import { createDevVerifier, createOidcVerifier, type DevTokens, type TokenVerifier } from './auth/tokens.js';
 import sessionRoutes from './modules/session/routes.js';
 import lookupRoutes from './modules/lookups/routes.js';
 import supplierRoutes from './modules/suppliers/routes.js';
 import companyRoutes from './modules/company/routes.js';
+import adminRoutes from './modules/admin/routes.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
     db: pg.Pool;
     config: Config;
-    devTokens: DevTokens | null;
   }
 }
 
@@ -69,29 +67,26 @@ export async function buildApp({ config, pool, logger }: BuildOptions): Promise<
     ),
   );
 
-  let verifier: TokenVerifier;
-  if (config.AUTH_MODE === 'dev') {
-    const dev = createDevVerifier(config.DEV_AUTH_SECRET!);
-    app.decorate('devTokens', dev);
-    verifier = dev;
-  } else {
-    app.decorate('devTokens', null);
-    verifier = createOidcVerifier(config);
-  }
-
-  await app.register(cors, { origin: config.CORS_ORIGIN.split(',').map((s) => s.trim()), credentials: false });
+  // Frontend e API stanno sullo stesso indirizzo (proxy di Vite in sviluppo, IIS in produzione):
+  // non serve CORS, e il cookie di sessione SameSite=Strict non parte mai da siti esterni.
 
   await app.register(swagger, {
     openapi: {
       info: { title: 'Albo Fornitori API', version: '0.1.0' },
-      components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
-      security: [{ bearer: [] }],
+      components: { securitySchemes: { sessione: { type: 'apiKey', in: 'cookie', name: 'albo_sessione' } } },
+      security: [{ sessione: [] }],
     },
     transform: jsonSchemaTransform,
   });
   await app.register(swaggerUi, { routePrefix: '/docs' });
 
-  await app.register(authPlugin, { verifier });
+  await app.register(authPlugin, {
+    settings: {
+      idleMinutes: config.SESSION_IDLE_MINUTES,
+      maxHours: config.SESSION_MAX_HOURS,
+      secureCookie: config.cookieSecure,
+    },
+  });
 
   app.get('/api/health', { config: { public: true }, schema: { hide: true } }, async () => {
     await app.db.query('SELECT 1');
@@ -102,6 +97,7 @@ export async function buildApp({ config, pool, logger }: BuildOptions): Promise<
   await app.register(lookupRoutes, { prefix: '/api' });
   await app.register(supplierRoutes, { prefix: '/api/fornitori' });
   await app.register(companyRoutes, { prefix: '/api/fornitori' });
+  await app.register(adminRoutes, { prefix: '/api/admin' });
 
   return app;
 }

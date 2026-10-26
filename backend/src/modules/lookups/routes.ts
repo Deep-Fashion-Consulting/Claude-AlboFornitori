@@ -3,22 +3,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { currentUser } from '../../auth/plugin.js';
 import { notFound } from '../../errors.js';
-
-/**
- * Liste servite dall'endpoint generico. Il nome della tabella viene SOLO da questa mappa,
- * mai dall'input: l'interpolazione nella query è quindi sicura.
- */
-const LOOKUPS: Record<string, string> = {
-  'stati-fornitore': 'ref.stato_fornitore',
-  'tipi-indirizzo': 'ref.tipo_indirizzo',
-  marchi: 'ref.marchio',
-  enti: 'ref.ente',
-  'classi-merceologiche': 'ref.classe_merceologica',
-  applicativi: 'ref.applicativo',
-  valute: 'ref.valuta',
-  'tipi-immobile': 'ref.tipo_immobile',
-  'tipi-interlocutore': 'ref.tipo_interlocutore',
-};
+import { isLookupName, LOOKUPS } from './catalog.js';
 
 const Item = z.object({ id: z.number(), codice: z.string().nullable(), descrizione: z.string() });
 const descr = (alias: string) =>
@@ -39,8 +24,9 @@ export default async function lookupRoutes(appBase: FastifyInstance) {
     },
     async (request) => {
       const user = currentUser(request);
-      const table = LOOKUPS[request.params.nome];
-      if (!table) throw notFound(`Lista "${request.params.nome}" inesistente`);
+      const { nome } = request.params;
+      if (!isLookupName(nome)) throw notFound(`Lista "${nome}" inesistente`);
+      const { table } = LOOKUPS[nome];
       const { rows } = await app.db.query(
         `SELECT t.id, t.codice, ${descr('t')} AS descrizione FROM ${table} t WHERE t.attivo ORDER BY t.ordine, 3`,
         [user.lingua],
@@ -136,7 +122,7 @@ export default async function lookupRoutes(appBase: FastifyInstance) {
             AND ($3::int IS NULL OR t.nazione_id = $3)
             AND ($4::text IS NULL OR common.f_search_key(t.descrizione_it) LIKE common.f_search_key($4) || '%')
           ORDER BY 3
-          LIMIT 300`,
+          LIMIT 1000`,
         [currentUser(request).lingua, provinciaId ?? null, nazioneId ?? null, q || null],
       );
       return rows;

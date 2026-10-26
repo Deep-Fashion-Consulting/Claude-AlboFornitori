@@ -8,18 +8,18 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=../.env dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=1 \"test/*.test.ts\""
+    "test": "tsx --test --test-concurrency=1 \"test/*.test.ts\"",
+    "utente": "node --env-file-if-exists=../.env dist/cli/utente.js",
+    "utente:dev": "tsx --env-file-if-exists=../.env src/cli/utente.ts"
   },
   "dependencies": {
-    "@fastify/cors": "11.1.0",
     "@fastify/swagger": "9.5.2",
     "@fastify/swagger-ui": "6.1.1",
-    "fastify": "5.12.5",
+    "fastify": "5.12.7",
     "fastify-plugin": "5.1.0",
     "fastify-type-provider-zod": "6.1.0",
-    "jose": "6.1.0",
     "pg": "8.16.3",
-    "zod": "4.1.12"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@types/node": "22.18.12",

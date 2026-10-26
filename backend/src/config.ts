@@ -1,38 +1,23 @@
 import { z } from 'zod';
 
-const EnvSchema = z
-  .object({
-    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: z.coerce.number().int().positive().default(3000),
-    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-    DATABASE_URL: z.string().min(1, 'DATABASE_URL è obbligatoria'),
-    CORS_ORIGIN: z.string().default('http://localhost:5173'),
+const EnvSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().positive().default(3000),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL è obbligatoria'),
 
-    AUTH_MODE: z.enum(['oidc', 'dev']).default('oidc'),
-    DEV_AUTH_SECRET: z.string().optional(),
-    OIDC_ISSUER: z.string().url().optional(),
-    OIDC_AUDIENCE: z.string().optional(),
-    OIDC_USERNAME_CLAIM: z.string().default('preferred_username'),
-    OIDC_STRIP_UPN_DOMAIN: z
-      .enum(['true', 'false'])
-      .default('true')
-      .transform((v) => v === 'true'),
-  })
-  .superRefine((env, ctx) => {
-    if (env.AUTH_MODE === 'oidc' && (!env.OIDC_ISSUER || !env.OIDC_AUDIENCE)) {
-      ctx.addIssue({ code: 'custom', message: 'Con AUTH_MODE=oidc servono OIDC_ISSUER e OIDC_AUDIENCE' });
-    }
-    if (env.AUTH_MODE === 'dev') {
-      if (env.NODE_ENV === 'production') {
-        ctx.addIssue({ code: 'custom', message: 'AUTH_MODE=dev non è ammesso in produzione' });
-      }
-      if (!env.DEV_AUTH_SECRET || env.DEV_AUTH_SECRET.length < 32) {
-        ctx.addIssue({ code: 'custom', message: 'Con AUTH_MODE=dev serve DEV_AUTH_SECRET di almeno 32 caratteri' });
-      }
-    }
-  });
+  /** Minuti di inattività dopo cui la sessione scade */
+  SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).default(120),
+  /** Durata massima di una sessione, anche se usata di continuo */
+  SESSION_MAX_HOURS: z.coerce.number().int().min(1).default(12),
+  /**
+   * Cookie solo su HTTPS. Predefinito: attivo in produzione.
+   * Disattivarlo solo per prove interne su HTTP: le password viaggerebbero in chiaro.
+   */
+  COOKIE_SECURE: z.enum(['true', 'false']).optional(),
+});
 
-export type Config = z.infer<typeof EnvSchema>;
+export type Config = z.infer<typeof EnvSchema> & { cookieSecure: boolean };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = EnvSchema.safeParse(env);
@@ -40,5 +25,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const details = parsed.error.issues.map((i) => `- ${i.path.join('.') || 'config'}: ${i.message}`).join('\n');
     throw new Error(`Configurazione non valida:\n${details}`);
   }
-  return parsed.data;
+  const c = parsed.data;
+  return { ...c, cookieSecure: c.COOKIE_SECURE ? c.COOKIE_SECURE === 'true' : c.NODE_ENV === 'production' };
 }

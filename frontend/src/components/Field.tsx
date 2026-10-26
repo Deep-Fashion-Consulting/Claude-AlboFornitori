@@ -34,7 +34,7 @@ export function Field({ label, hint, error, className, children }: FieldProps) {
 
 /** Coppia etichetta/valore in sola lettura */
 export function ReadValue({ label, children }: { label: string; children: ReactNode }) {
-  const empty = children === null || children === undefined || children === '';
+  const empty = children === null || children === undefined || children === '' || children === false;
   return (
     <div className="readvalue">
       <dt>{label}</dt>

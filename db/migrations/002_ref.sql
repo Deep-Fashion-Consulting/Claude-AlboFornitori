@@ -77,9 +77,7 @@ COMMENT ON TABLE ref.divisione IS '[H2] Divisione di FORNITORE_MARCHIO_DIVISIONE
 
 CREATE TABLE ref.applicativo (LIKE common.lookup_template INCLUDING ALL);
 COMMENT ON TABLE ref.applicativo IS 'Sistemi esterni che assegnano un codice al fornitore (SAP, ST3/Stealth, ...).';
-INSERT INTO ref.applicativo (codice, descrizione_it, descrizione_en, ordine) VALUES
-  ('SAP', 'SAP', 'SAP', 1),
-  ('ST3', 'Stealth (ST3)', 'Stealth (ST3)', 2);
+-- I sistemi esterni li configura ogni cliente (vedi migrazione 009); i dati di prova ne caricano due.
 
 CREATE TABLE ref.valuta (LIKE common.lookup_template INCLUDING ALL);
 COMMENT ON COLUMN ref.valuta.codice IS 'Codice ISO 4217 (EUR, USD, ...).';

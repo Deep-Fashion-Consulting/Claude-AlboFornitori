@@ -1,59 +1,47 @@
 import fp from 'fastify-plugin';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { Identity, UserContext } from './context.js';
-import type { TokenVerifier } from './tokens.js';
-import { findUser, UserCache, type ResolvedUser } from './users.js';
-import { forbidden, unauthorized } from '../errors.js';
+import type { UserContext } from './context.js';
+import { readCookie, SESSION_COOKIE, useSession, type SessionSettings } from './sessions.js';
+import { loadActiveUser } from './users.js';
+import { unauthorized } from '../errors.js';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
-    /** Rotta accessibile senza token */
+    /** Rotta accessibile senza sessione (login, health) */
     public?: boolean;
-    /** La rotta riceve l'identità anche se l'utente non è abilitato (solo POST /api/session) */
-    allowUnknownUser?: boolean;
   }
   interface FastifyRequest {
-    identity: Identity | null;
-    resolvedUser: ResolvedUser | null;
+    user: UserContext | null;
+    sessionToken: string | null;
   }
   interface FastifyInstance {
-    userCache: UserCache;
+    sessionSettings: SessionSettings;
   }
 }
 
-/** Utente autenticato e abilitato: da usare nelle rotte protette. */
+/** Utente autenticato: da usare nelle rotte protette. */
 export function currentUser(request: FastifyRequest): UserContext {
-  if (!request.resolvedUser) throw unauthorized();
-  return request.resolvedUser;
+  if (!request.user) throw unauthorized();
+  return request.user;
 }
 
 export default fp(
-  async function authPlugin(app: FastifyInstance, opts: { verifier: TokenVerifier }) {
-    app.decorate('userCache', new UserCache());
-    app.decorateRequest('identity', null);
-    app.decorateRequest('resolvedUser', null);
+  async function authPlugin(app: FastifyInstance, opts: { settings: SessionSettings }) {
+    app.decorate('sessionSettings', opts.settings);
+    app.decorateRequest('user', null);
+    app.decorateRequest('sessionToken', null);
 
     app.addHook('preHandler', async (request) => {
-      const config = request.routeOptions.config;
-      if (config?.public || !request.url.startsWith('/api/')) return;
+      if (request.routeOptions.config?.public || !request.url.startsWith('/api/')) return;
 
-      const header = request.headers.authorization;
-      if (!header?.startsWith('Bearer ')) throw unauthorized();
-      const identity = await opts.verifier.verify(header.slice('Bearer '.length));
-      request.identity = identity;
+      const token = readCookie(request.headers.cookie, SESSION_COOKIE);
+      if (!token) throw unauthorized();
+      const userId = await useSession(app.db, token, opts.settings);
+      const user = userId ? await loadActiveUser(app.db, userId) : null;
+      if (!user) throw unauthorized('Sessione scaduta: accedi di nuovo');
 
-      const key = `${identity.subject}|${identity.username}`;
-      let user = app.userCache.get(key);
-      if (!user) {
-        user = (await findUser(app.db, identity)) ?? undefined;
-        if (user) app.userCache.set(key, user);
-      }
-
-      if (!user || !user.attivo) {
-        if (config?.allowUnknownUser) return;
-        throw forbidden('UTENTE_NON_ABILITATO', "L'utente non è abilitato all'Albo fornitori");
-      }
-      request.resolvedUser = user;
+      request.user = user;
+      request.sessionToken = token;
     });
   },
   { name: 'auth', dependencies: ['db'] },

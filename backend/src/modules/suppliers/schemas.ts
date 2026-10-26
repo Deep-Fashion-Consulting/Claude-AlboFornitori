@@ -30,8 +30,7 @@ export const SupplierSummarySchema = z.object({
   partitaIvaCee: z.string().nullable(),
   codiceFiscale: z.string().nullable(),
   email: z.string().nullable(),
-  codiciSap: z.string().nullable(),
-  codiciSt3: z.string().nullable(),
+  codiciEsterni: z.string().nullable(),
   stato: z.string().nullable(),
   attivo: z.boolean(),
   preferito: z.boolean(),
@@ -112,14 +111,34 @@ export const SupplierGeneralSchema = z.object({
       valutazioneGenerale: z.number().nullable(),
     }),
   ),
-  codiciApplicativi: z.array(z.object({ applicativo: z.string(), codice: z.string() })),
-  marchi: z.array(z.object({ marchio: z.string(), divisione: z.string().nullable() })),
+  codiciApplicativi: z.array(z.object({ id: z.number(), applicativoId: z.number(), applicativo: z.string(), codice: z.string() })),
+  marchi: z.array(z.object({ id: z.number(), marchioId: z.number(), marchio: z.string(), divisione: z.string().nullable() })),
   preferito: z.boolean(),
 });
+
+/** Dati identificativi: obbligatoria solo la ragione sociale. I codici sono controllati nel repository. */
+const identita = {
+  ragioneSociale: z.string().trim().min(1, 'Indica la ragione sociale').max(255),
+  partitaIva: optText(20),
+  partitaIvaCee: optText(20),
+  codiceFiscale: optText(20),
+  telefono: optText(40),
+};
+
+export const CreateSupplierBody = z.object({
+  ...identita,
+  email: optEmail.optional().default(null),
+  /** true per creare comunque un fornitore che ha gli stessi codici di uno esistente */
+  confermaDuplicato: z.boolean().default(false),
+});
+export type CreateSupplier = z.infer<typeof CreateSupplierBody>;
 
 export const UpdateGeneralBody = z
   .object({
     versione: z.string().min(1),
+    ...identita,
+    fax: optText(40),
+    confermaDuplicato: z.boolean().default(false),
     denominazioneSociale: optText(255),
     sedeLegale: optText(500),
     dataInizioAttivita: optDate,
@@ -142,14 +161,31 @@ export const AddStateBody = z.object({
   dataDa: z.iso.date({ message: 'Data non valida (AAAA-MM-GG)' }),
 });
 
+/**
+ * La località si indica in due modi:
+ *  - localitaId: un comune italiano (o una località già presente) scelto dall'elenco;
+ *  - nazioneId + localitaNome: una località estera scritta a mano, creata se non esiste.
+ */
 export const AddAddressBody = z.object({
   tipoIndirizzoId: z.number().int().positive(),
-  localitaId: z.number().int().positive(),
+  localitaId: z.number().int().positive().optional(),
+  nazioneId: z.number().int().positive().optional(),
+  localitaNome: z.string().trim().max(150).optional(),
   indirizzo: z.string().trim().min(1, 'Indica l’indirizzo').max(255),
   cap: optText(10).optional().default(null),
   telefono: optText(40).optional().default(null),
   principale: z.boolean().default(false),
+}).refine((v) => v.localitaId || (v.nazioneId && v.localitaNome), {
+  message: 'Indica la località',
+  path: ['localitaId'],
 });
 export type AddAddress = z.infer<typeof AddAddressBody>;
 
 export const CreatedSchema = z.object({ id: z.number() });
+
+export const AddCodeBody = z.object({
+  applicativoId: z.number().int().positive(),
+  codice: z.string().trim().min(1, 'Indica il codice').max(50),
+});
+export const AddBrandBody = z.object({ marchioId: z.number().int().positive() });
+export const AddEntityBody = z.object({ enteId: z.number().int().positive() });

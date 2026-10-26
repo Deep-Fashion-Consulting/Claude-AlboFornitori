@@ -10,6 +10,9 @@ import type {
   SupplierHeader,
   TipoCollegamento,
   UpdateGeneral,
+  NewSupplier,
+  ListaValori,
+  VoceLista,
 } from './types';
 
 export const keys = {
@@ -81,6 +84,14 @@ function useSupplierMutation<V>(id: number, fn: (v: V) => Promise<unknown>, extr
   });
 }
 
+export function useCreateSupplier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: NewSupplier) => api<{ id: number }>('/api/fornitori', { method: 'POST', body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fornitori', 'ricerca'] }),
+  });
+}
+
 export const useUpdateGeneral = (id: number) =>
   useSupplierMutation(id, (body: UpdateGeneral) => api<{ versione: string }>(`/api/fornitori/${id}`, { method: 'PUT', body }));
 
@@ -92,16 +103,20 @@ export const useAddState = (id: number) =>
 export const useRemoveState = (id: number) =>
   useSupplierMutation(id, (statoRecordId: number) => api(`/api/fornitori/${id}/stati/${statoRecordId}`, { method: 'DELETE' }));
 
+/** Comune scelto dall'elenco (localitaId) oppure località estera scritta a mano (nazioneId + localitaNome) */
 export interface NewAddress {
   tipoIndirizzoId: number;
-  localitaId: number;
+  localitaId?: number;
+  nazioneId?: number;
+  localitaNome?: string;
   indirizzo: string;
   cap: string;
   telefono: string;
   principale: boolean;
 }
+/** Un indirizzo estero può creare una nuova località: l'elenco delle località va riletto */
 export const useAddAddress = (id: number) =>
-  useSupplierMutation(id, (body: NewAddress) => api(`/api/fornitori/${id}/indirizzi`, { method: 'POST', body }));
+  useSupplierMutation(id, (body: NewAddress) => api(`/api/fornitori/${id}/indirizzi`, { method: 'POST', body }), [['geo', 'localita']]);
 
 export const useSetPrincipal = (id: number) =>
   useSupplierMutation(id, (addressId: number) =>
@@ -166,3 +181,47 @@ export const useSupplierLookup = (nome: string) =>
     enabled: nome.trim().length >= 2,
     staleTime: 30_000,
   });
+
+// ----------------------------------------------- codici esterni, marchi, enti
+export const useAddCode = (id: number) =>
+  useSupplierMutation(id, (body: { applicativoId: number; codice: string }) => api(`/api/fornitori/${id}/codici`, { method: 'POST', body }));
+export const useRemoveCode = (id: number) =>
+  useSupplierMutation(id, (rowId: number) => api(`/api/fornitori/${id}/codici/${rowId}`, { method: 'DELETE' }));
+export const useAddBrand = (id: number) =>
+  useSupplierMutation(id, (marchioId: number) => api(`/api/fornitori/${id}/marchi`, { method: 'POST', body: { marchioId } }));
+export const useRemoveBrand = (id: number) =>
+  useSupplierMutation(id, (rowId: number) => api(`/api/fornitori/${id}/marchi/${rowId}`, { method: 'DELETE' }));
+/** Gli enti cambiano anche il menu (voci per ente) */
+export const useAddEntity = (id: number) =>
+  useSupplierMutation(id, (enteId: number) => api(`/api/fornitori/${id}/enti`, { method: 'POST', body: { enteId } }), [['menu']]);
+export const useRemoveEntity = (id: number) =>
+  useSupplierMutation(id, (enteId: number) => api(`/api/fornitori/${id}/enti/${enteId}`, { method: 'DELETE' }), [['menu']]);
+
+// ---------------------------------------------------- liste di valori (admin)
+export const useAdminLists = () =>
+  useQuery({ queryKey: ['admin', 'liste'], queryFn: () => api<ListaValori[]>('/api/admin/liste'), staleTime: Infinity });
+
+export const useAdminList = (nome: string | null) =>
+  useQuery({
+    queryKey: ['admin', 'liste', nome],
+    queryFn: () => api<VoceLista[]>(`/api/admin/liste/${nome}`),
+    enabled: Boolean(nome),
+  });
+
+export function useSaveListItem(nome: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: number | null; body: Omit<VoceLista, 'id'> }) =>
+      id
+        ? api(`/api/admin/liste/${nome}/${id}`, { method: 'PUT', body })
+        : api(`/api/admin/liste/${nome}`, { method: 'POST', body }),
+    onSuccess: async () => {
+      // le liste di scelta usate nelle altre pagine si aggiornano subito
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['admin', 'liste', nome] }),
+        qc.invalidateQueries({ queryKey: ['lookup', nome] }),
+        qc.invalidateQueries({ queryKey: ['me', 'enti'] }),
+      ]);
+    },
+  });
+}

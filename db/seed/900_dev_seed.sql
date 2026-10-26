@@ -1,50 +1,29 @@
 -- =============================================================================
--- Dati di SVILUPPO: lookup minime, menu, utenti di prova e fornitori fittizi.
--- Non eseguire in produzione: in produzione i dati arrivano dalla migrazione del legacy.
+-- Dati di SVILUPPO: liste di valori di prova, utenti di prova e fornitori fittizi.
+-- Non eseguire in produzione. Geografia, valute, menu e gruppi arrivano dalle migrazioni:
+-- qui si fa riferimento a località, province, nazioni e valute per codice, mai per id.
 -- =============================================================================
 BEGIN;
 
 -- ---------------------------------------------------------------------------
 -- Geografia
 -- ---------------------------------------------------------------------------
-INSERT INTO ref.area_geografica (id, codice, descrizione_it, descrizione_en, ordine) VALUES
-  (1, 'EUR', 'Europa', 'Europe', 1),
-  (2, 'ASI', 'Asia', 'Asia', 2),
-  (3, 'NAM', 'Nord America', 'North America', 3);
-
-INSERT INTO ref.nazione (id, codice, iso2, iso3, descrizione_it, descrizione_en, area_geografica_id, europa) VALUES
-  (1, 'IT', 'IT', 'ITA', 'Italia', 'Italy', 1, true),
-  (2, 'FR', 'FR', 'FRA', 'Francia', 'France', 1, true),
-  (3, 'ES', 'ES', 'ESP', 'Spagna', 'Spain', 1, true),
-  (4, 'PT', 'PT', 'PRT', 'Portogallo', 'Portugal', 1, true),
-  (5, 'RO', 'RO', 'ROU', 'Romania', 'Romania', 1, true),
-  (6, 'TR', 'TR', 'TUR', 'Turchia', 'Turkey', 2, false),
-  (7, 'CN', 'CN', 'CHN', 'Cina', 'China', 2, false);
-
-INSERT INTO ref.regione (id, codice, descrizione_it, nazione_id) VALUES
-  (1, 'TOS', 'Toscana', 1), (2, 'LOM', 'Lombardia', 1), (3, 'VEN', 'Veneto', 1),
-  (4, 'MAR', 'Marche', 1), (5, 'CAM', 'Campania', 1);
-
-INSERT INTO ref.provincia (id, codice, sigla, descrizione_it, regione_id) VALUES
-  (1, 'FI', 'FI', 'Firenze', 1), (2, 'AR', 'AR', 'Arezzo', 1),
-  (3, 'MI', 'MI', 'Milano', 2),  (4, 'BG', 'BG', 'Bergamo', 2),
-  (5, 'VE', 'VE', 'Venezia', 3), (6, 'TV', 'TV', 'Treviso', 3),
-  (7, 'FM', 'FM', 'Fermo', 4),   (8, 'MC', 'MC', 'Macerata', 4),
-  (9, 'NA', 'NA', 'Napoli', 5);
-
-INSERT INTO ref.localita (id, descrizione_it, nazione_id, provincia_id, cap_default) VALUES
-  (1, 'Firenze', 1, 1, '50100'), (2, 'Scandicci', 1, 1, '50018'),
-  (3, 'Montevarchi', 1, 2, '52025'), (4, 'Terranuova Bracciolini', 1, 2, '52028'),
-  (5, 'Milano', 1, 3, '20100'), (6, 'Bergamo', 1, 4, '24100'),
-  (7, 'Fiesso d''Artico', 1, 5, '30032'), (8, 'Montebelluna', 1, 6, '31044'),
-  (9, 'Montegranaro', 1, 7, '63812'), (10, 'Civitanova Marche', 1, 8, '62012'),
-  (11, 'Napoli', 1, 9, '80100'),
-  (12, 'Parigi', 2, NULL, NULL), (13, 'Felgueiras', 4, NULL, NULL),
-  (14, 'Timisoara', 5, NULL, NULL), (15, 'Istanbul', 6, NULL, NULL), (16, 'Dongguan', 7, NULL, NULL);
+-- Località estere di prova (i comuni italiani sono nella migrazione 010)
+INSERT INTO ref.localita (descrizione_it, nazione_id)
+SELECT v.nome, n.id
+  FROM (VALUES ('Parigi', 'FR'), ('Felgueiras', 'PT'), ('Timisoara', 'RO'), ('Istanbul', 'TR'), ('Dongguan', 'CN')) AS v(nome, iso)
+  JOIN ref.nazione n ON n.iso2 = v.iso
+ WHERE NOT EXISTS (SELECT 1 FROM ref.localita l WHERE l.nazione_id = n.id AND lower(l.descrizione_it) = lower(v.nome));
 
 -- ---------------------------------------------------------------------------
 -- Lookup
 -- ---------------------------------------------------------------------------
+-- Sistemi esterni di prova (in produzione li configura l'amministratore)
+INSERT INTO ref.applicativo (codice, descrizione_it, descrizione_en, ordine) VALUES
+  ('SAP', 'SAP', 'SAP', 1),
+  ('ST3', 'Stealth (ST3)', 'Stealth (ST3)', 2)
+ON CONFLICT (codice) DO NOTHING;
+
 INSERT INTO ref.tipo_indirizzo (id, codice, descrizione_it, descrizione_en, ordine) VALUES
   (1, 'LEG', 'Sede legale', 'Registered office', 1),
   (2, 'OPE', 'Sede operativa', 'Operating site', 2),
@@ -56,9 +35,6 @@ INSERT INTO ref.stato_fornitore (id, codice, descrizione_it, descrizione_en, ord
   (2, 'QUALIFICATO', 'Qualificato', 'Qualified', 2),
   (3, 'SOSPESO', 'Sospeso', 'Suspended', 3),
   (4, 'CESSATO', 'Non più attivo', 'No longer active', 4);
-
-INSERT INTO ref.valuta (id, codice, descrizione_it, descrizione_en) VALUES
-  (1, 'EUR', 'Euro', 'Euro'), (2, 'USD', 'Dollaro USA', 'US dollar'), (3, 'CNY', 'Renminbi', 'Renminbi');
 
 INSERT INTO ref.societa (id, codice, descrizione_it) VALUES
   (1, 'S01', 'Capogruppo Italia S.p.A.'), (2, 'S02', 'Retail Europa S.r.l.');
@@ -81,73 +57,17 @@ INSERT INTO ref.punteggio_valutazione (valore, descrizione_it, descrizione_en) V
   (1, 'Insufficiente', 'Poor'), (2, 'Sufficiente', 'Fair'), (3, 'Buono', 'Good'),
   (4, 'Ottimo', 'Very good'), (5, 'Eccellente', 'Excellent');
 
--- ---------------------------------------------------------------------------
--- Menu e permessi
--- ---------------------------------------------------------------------------
-INSERT INTO iam.funzione (id, parent_id, codice, livello, route, ordine, richiede_fornitore, richiede_ente_autorizzato, legacy_id) VALUES
-  (1,  NULL, 'ALBO', 'AREA', NULL, 1, false, false, 700),
-  (10, 1, 'MOD_RICERCA', 'MODULO', NULL, 1, false, false, NULL),
-  (11, 10, 'FORNITORE_RICERCA', 'FUNZIONE', '/fornitori', 1, false, false, NULL),
-  (20, 1, 'MOD_SCHEDA', 'MODULO', NULL, 2, false, false, NULL),
-  (21, 20, 'FORNITORE_ANAGRAFICA', 'FUNZIONE', '/fornitori/:id/anagrafica', 1, true, false, NULL),
-  (22, 20, 'FORNITORE_SOCIETA', 'FUNZIONE', '/fornitori/:id/societa', 2, true, false, NULL),
-  (23, 20, 'FORNITORE_ECONOMICI', 'FUNZIONE', '/fornitori/:id/dati-economici', 3, true, false, NULL),
-  (24, 20, 'FORNITORE_ORDFATT', 'FUNZIONE', '/fornitori/:id/ordinato-fatturato', 4, true, false, NULL),
-  (25, 20, 'FORNITORE_PAGAMENTI', 'FUNZIONE', '/fornitori/:id/pagamenti', 5, true, false, NULL),
-  (26, 20, 'FORNITORE_CONTRATTI', 'FUNZIONE', '/fornitori/:id/contratti', 6, true, false, NULL),
-  (27, 20, 'FORNITORE_CERTIFICAZIONI', 'FUNZIONE', '/fornitori/:id/certificazioni', 7, true, false, NULL),
-  (28, 20, 'FORNITORE_COMPLIANCE', 'FUNZIONE', '/fornitori/:id/compliance', 8, true, false, NULL),
-  (30, 1, 'MOD_INDUSTRIALE', 'MODULO', NULL, 3, false, false, 701),
-  (31, 30, 'FORNITORE_PRODUZIONE', 'FUNZIONE', '/fornitori/:id/produzione', 1, true, true, NULL),
-  (32, 30, 'FORNITORE_LOGISTICA', 'FUNZIONE', '/fornitori/:id/logistica', 2, true, false, NULL),
-  (33, 30, 'FORNITORE_VALUTAZIONE', 'FUNZIONE', '/fornitori/:id/valutazione', 3, true, true, NULL),
-  (40, 1, 'MOD_REPORT', 'MODULO', NULL, 4, false, false, 706),
-  (41, 40, 'REPORT_ANAGRAFICA', 'FUNZIONE', '/report/anagrafica', 1, false, false, NULL),
-  (42, 40, 'REPORT_INDUSTRIALE', 'FUNZIONE', '/report/industriale', 2, false, false, NULL),
-  (43, 40, 'REPORT_COMPLIANCE', 'FUNZIONE', '/report/compliance', 3, false, false, NULL),
-  (50, 1, 'MOD_AMMINISTRAZIONE', 'MODULO', NULL, 5, false, false, 710),
-  (51, 50, 'UTENTI', 'FUNZIONE', '/amministrazione/utenti', 1, false, false, NULL);
-
-INSERT INTO iam.funzione_traduzione (funzione_id, lingua, descrizione) VALUES
-  (1,'IT','Albo fornitori'), (1,'EN','Supplier register'),
-  (10,'IT','Ricerca'), (10,'EN','Search'),
-  (11,'IT','Ricerca fornitori'), (11,'EN','Find suppliers'),
-  (20,'IT','Scheda fornitore'), (20,'EN','Supplier file'),
-  (21,'IT','Dati anagrafici'), (21,'EN','General data'),
-  (22,'IT','Struttura societaria'), (22,'EN','Company structure'),
-  (23,'IT','Dati economici'), (23,'EN','Financials'),
-  (24,'IT','Ordinato e fatturato'), (24,'EN','Orders and turnover'),
-  (25,'IT','Banca e pagamenti'), (25,'EN','Bank and payments'),
-  (26,'IT','Contratti'), (26,'EN','Contracts'),
-  (27,'IT','Certificazioni'), (27,'EN','Certifications'),
-  (28,'IT','Compliance'), (28,'EN','Compliance'),
-  (30,'IT','Industriale'), (30,'EN','Industrial'),
-  (31,'IT','Produzione'), (31,'EN','Production'),
-  (32,'IT','Logistica'), (32,'EN','Logistics'),
-  (33,'IT','Valutazione'), (33,'EN','Evaluation'),
-  (40,'IT','Report'), (40,'EN','Reports'),
-  (41,'IT','Report anagrafico'), (41,'EN','Register report'),
-  (42,'IT','Report industriale'), (42,'EN','Industrial report'),
-  (43,'IT','Report compliance'), (43,'EN','Compliance report'),
-  (50,'IT','Amministrazione'), (50,'EN','Administration'),
-  (51,'IT','Utenti e abilitazioni'), (51,'EN','Users and permissions');
-
-INSERT INTO iam.gruppo (id, codice, descrizione) VALUES
-  (1, 'CONSULTAZIONE', 'Consultazione albo'),
-  (2, 'AMMINISTRAZIONE', 'Amministratori');
-
-INSERT INTO iam.gruppo_funzione (gruppo_id, funzione_id)
-SELECT 1, id FROM iam.funzione WHERE livello = 'FUNZIONE' AND codice <> 'UTENTI';
-INSERT INTO iam.gruppo_funzione (gruppo_id, funzione_id)
-SELECT 2, id FROM iam.funzione WHERE livello = 'FUNZIONE';
-
 INSERT INTO iam.utente (id, username, cognome, nome, email, lingua, flag_lettura, flag_scrittura, attivo) VALUES
   (1, 'admin',    'Amministratore', 'Albo', 'admin@example.test', 'IT', true, true, true),
   (2, 'mrossi',   'Rossi',   'Mario', 'mario.rossi@example.test', 'IT', true, true, true),
   (3, 'lbianchi', 'Bianchi', 'Laura', 'laura.bianchi@example.test', 'EN', true, false, true),
   (4, 'exutente', 'Verdi',   'Paolo', NULL, 'IT', true, false, false);
 
-INSERT INTO iam.utente_gruppo VALUES (1, 2), (2, 1), (3, 1), (4, 1);
+INSERT INTO iam.utente_gruppo (utente_id, gruppo_id)
+SELECT u.id, g.id
+  FROM (VALUES ('admin', 'AMMINISTRAZIONE'), ('mrossi', 'CONSULTAZIONE'), ('lbianchi', 'CONSULTAZIONE'), ('exutente', 'CONSULTAZIONE')) AS v(username, gruppo)
+  JOIN iam.utente u ON u.username = v.username
+  JOIN iam.gruppo g ON g.codice = v.gruppo;
 INSERT INTO iam.utente_ente (utente_id, ente_id) SELECT 1, id FROM ref.ente;
 INSERT INTO iam.utente_ente VALUES (2, 1), (2, 3);
 
@@ -187,21 +107,26 @@ INSERT INTO albo.fornitore (id, ragione_sociale, partita_iva, partita_iva_cee, c
 
 UPDATE albo.fornitore SET sostituito_da_id = 1003 WHERE id = 1004;
 
+-- pg_temp.cat(): comune per codice catastale; pg_temp.est(): località estera per nazione e nome
+CREATE FUNCTION pg_temp.cat(c text) RETURNS bigint LANGUAGE sql AS $$ SELECT id FROM ref.localita WHERE codice = c $$;
+CREATE FUNCTION pg_temp.est(iso text, nome text) RETURNS bigint LANGUAGE sql AS $$
+  SELECT l.id FROM ref.localita l JOIN ref.nazione n ON n.id = l.nazione_id WHERE n.iso2 = iso AND l.descrizione_it = nome $$;
+
 INSERT INTO albo.fornitore_indirizzo (fornitore_id, tipo_indirizzo_id, localita_id, indirizzo, cap, telefono, principale, latitudine, longitudine) VALUES
-  (1001, 1, 2, 'Via dei Pratoni 12', '50018', '+39 055 7350001', true, 43.7547, 11.1844),
-  (1001, 3, 2, 'Via del Padule 8', '50018', NULL, false, 43.7671, 11.1702),
-  (1002, 1, 3, 'Via Leona 5', '52025', NULL, true, 43.5236, 11.5652),
-  (1003, 1, 4, 'Via Poggilupi 22', '52028', NULL, true, NULL, NULL),
-  (1004, 1, 4, 'Via Vecchia Aretina 3', '52028', NULL, true, NULL, NULL),
-  (1005, 1, 7, 'Via Naviglio 40', '30032', NULL, true, 45.4117, 12.0306),
-  (1006, 1, 9, 'Contrada Santa Maria 14', '63812', NULL, true, NULL, NULL),
-  (1007, 1, 8, 'Via Feltrina Sud 210', '31044', NULL, true, NULL, NULL),
-  (1008, 1, 6, 'Via Grumello 61', '24127', NULL, true, NULL, NULL),
-  (1009, 1, 12, '18 rue du Faubourg Saint-Honoré', '75008', NULL, true, NULL, NULL),
-  (1010, 1, 13, 'Rua da Indústria 77', '4610-102', NULL, true, NULL, NULL),
-  (1011, 1, 5, 'Via Mecenate 76', '20138', NULL, true, NULL, NULL),
-  (1012, 1, 1, 'Via di Novoli 40', '50127', NULL, true, NULL, NULL),
-  (1012, 4, 2, 'Via Charta 77', '50018', NULL, false, NULL, NULL);
+  (1001, 1, pg_temp.cat('B962'), 'Via dei Pratoni 12', '50018', '+39 055 7350001', true, 43.7547, 11.1844),
+  (1001, 3, pg_temp.cat('B962'), 'Via del Padule 8', '50018', NULL, false, 43.7671, 11.1702),
+  (1002, 1, pg_temp.cat('F656'), 'Via Leona 5', '52025', NULL, true, 43.5236, 11.5652),
+  (1003, 1, pg_temp.cat('L123'), 'Via Poggilupi 22', '52028', NULL, true, NULL, NULL),
+  (1004, 1, pg_temp.cat('L123'), 'Via Vecchia Aretina 3', '52028', NULL, true, NULL, NULL),
+  (1005, 1, pg_temp.cat('D578'), 'Via Naviglio 40', '30032', NULL, true, 45.4117, 12.0306),
+  (1006, 1, pg_temp.cat('F522'), 'Contrada Santa Maria 14', '63812', NULL, true, NULL, NULL),
+  (1007, 1, pg_temp.cat('F443'), 'Via Feltrina Sud 210', '31044', NULL, true, NULL, NULL),
+  (1008, 1, pg_temp.cat('A794'), 'Via Grumello 61', '24127', NULL, true, NULL, NULL),
+  (1009, 1, pg_temp.est('FR', 'Parigi'), '18 rue du Faubourg Saint-Honoré', '75008', NULL, true, NULL, NULL),
+  (1010, 1, pg_temp.est('PT', 'Felgueiras'), 'Rua da Indústria 77', '4610-102', NULL, true, NULL, NULL),
+  (1011, 1, pg_temp.cat('F205'), 'Via Mecenate 76', '20138', NULL, true, NULL, NULL),
+  (1012, 1, pg_temp.cat('D612'), 'Via di Novoli 40', '50127', NULL, true, NULL, NULL),
+  (1012, 4, pg_temp.cat('B962'), 'Via Charta 77', '50018', NULL, false, NULL, NULL);
 
 INSERT INTO albo.fornitore_codice_applicativo (fornitore_id, applicativo_id, codice) VALUES
   (1001, 1, '100045'), (1001, 2, 'ST-0045'), (1002, 1, '100212'), (1003, 1, '100988'),
@@ -235,20 +160,23 @@ INSERT INTO albo.fornitore_collegamento (fornitore_da_id, fornitore_a_id, tipo) 
   (1005, 1010, 'ALTERNATIVO');
 
 INSERT INTO albo.subfornitore (fornitore_id, ragione_sociale, partita_iva, nazione_id, provincia_id, localita, numero_addetti) VALUES
-  (1001, 'Laboratorio Tagli Lastra S.n.c.', '06111220481', 1, 1, 'Lastra a Signa', 9);
+  (1001, 'Laboratorio Tagli Lastra S.n.c.', '06111220481', (SELECT id FROM ref.nazione WHERE iso2 = 'IT'),
+   (SELECT id FROM ref.provincia WHERE sigla = 'FI'), 'Lastra a Signa', 9);
 
 INSERT INTO albo.fornitore_preferito (utente_id, fornitore_id) VALUES (2, 1001), (2, 1011);
 
-INSERT INTO ext.fatturato_passivo (fornitore_id, societa_id, anno, valuta_id, totale, totale_eur) VALUES
-  (1001, 1, 2024, 1, 4820000, 4820000), (1001, 1, 2025, 1, 5210000, 5210000),
-  (1002, 1, 2025, 1, 2100000, 2100000), (1003, 1, 2025, 1, 640000, 640000),
-  (1004, 1, 2018, 1, 380000, 380000), (1005, 1, 2025, 1, 3150000, 3150000);
-INSERT INTO ext.fatturato_attivo (fornitore_id, societa_id, anno, valuta_id, totale, totale_eur) VALUES
-  (1008, 1, 2025, 1, 45000, 45000);
-INSERT INTO ext.ordinato_sap (fornitore_id, societa_id, ente_id, cod_gruppo_acquisto, anno, valuta_id, importo) VALUES
-  (1001, 1, 1, 'G10', 2026, 1, 2950000), (1005, 1, 3, 'G30', 2026, 1, 1400000);
-INSERT INTO ext.ordinato_st3 (fornitore_id, societa_id, ente_id, anno, valuta_id, importo) VALUES
-  (1007, 1, 2, 2026, 1, 870000);
+-- Dati economici importati di prova, tutti in euro
+INSERT INTO ext.fatturato_passivo (fornitore_id, societa_id, anno, valuta_id, totale, totale_eur)
+SELECT f, 1, a, (SELECT id FROM ref.valuta WHERE codice = 'EUR'), t, t
+  FROM (VALUES (1001, 2024, 4820000), (1001, 2025, 5210000), (1002, 2025, 2100000),
+               (1003, 2025, 640000), (1004, 2018, 380000), (1005, 2025, 3150000)) AS v(f, a, t);
+INSERT INTO ext.fatturato_attivo (fornitore_id, societa_id, anno, valuta_id, totale, totale_eur)
+SELECT 1008, 1, 2025, id, 45000, 45000 FROM ref.valuta WHERE codice = 'EUR';
+INSERT INTO ext.ordinato_sap (fornitore_id, societa_id, ente_id, cod_gruppo_acquisto, anno, valuta_id, importo)
+SELECT f, 1, e, g, 2026, (SELECT id FROM ref.valuta WHERE codice = 'EUR'), i
+  FROM (VALUES (1001, 1, 'G10', 2950000), (1005, 3, 'G30', 1400000)) AS v(f, e, g, i);
+INSERT INTO ext.ordinato_st3 (fornitore_id, societa_id, ente_id, anno, valuta_id, importo)
+SELECT 1007, 1, 2, 2026, id, 870000 FROM ref.valuta WHERE codice = 'EUR';
 
 -- Riallinea le sequenze dopo gli inserimenti con ID espliciti
 DO $$

@@ -2,9 +2,10 @@ import type pg from 'pg';
 import { audit, diff, type RequestMeta } from '../../audit.js';
 import type { UserContext } from '../../auth/context.js';
 import { withTransaction, type Queryable } from '../../db.js';
-import { conflict, notFound } from '../../errors.js';
+import { AppError, badRequest, conflict, notFound } from '../../errors.js';
 import { buildSearchQuery, type SearchCriteria } from './search.js';
-import type { AddAddress, UpdateGeneral } from './schemas.js';
+import { isValidCodiceFiscale, isValidPartitaIva, isValidPartitaIvaCee, normalizeCode } from './codes.js';
+import type { AddAddress, CreateSupplier, UpdateGeneral } from './schemas.js';
 
 const label = (lingua: string, alias: string) =>
   lingua === 'EN' ? `COALESCE(${alias}.descrizione_en, ${alias}.descrizione_it)` : `${alias}.descrizione_it`;
@@ -31,8 +32,7 @@ export async function searchSuppliers(db: Queryable, user: UserContext, criteria
       partitaIvaCee: r.partita_iva_cee,
       codiceFiscale: r.codice_fiscale,
       email: r.email,
-      codiciSap: r.codici_sap,
-      codiciSt3: r.codici_st3,
+      codiciEsterni: r.codici_esterni,
       stato: user.lingua === 'EN' ? (r.stato_descrizione_en ?? r.stato_descrizione_it) : r.stato_descrizione_it,
       attivo: r.attivo,
       preferito: r.preferito,
@@ -117,13 +117,13 @@ export async function getGeneral(db: pg.Pool, user: UserContext, id: number) {
       [id, user.id],
     ),
     db.query(
-      `SELECT a.codice AS applicativo, ca.codice
+      `SELECT ca.id, a.id AS "applicativoId", a.codice AS applicativo, ca.codice
          FROM albo.fornitore_codice_applicativo ca JOIN ref.applicativo a ON a.id = ca.applicativo_id
         WHERE ca.fornitore_id = $1 ORDER BY a.ordine, ca.codice`,
       [id],
     ),
     db.query(
-      `SELECT m.descrizione_it AS marchio, d.descrizione_it AS divisione
+      `SELECT fm.id, m.id AS "marchioId", m.descrizione_it AS marchio, d.descrizione_it AS divisione
          FROM albo.fornitore_marchio fm
          JOIN ref.marchio m ON m.id = fm.marchio_id
          LEFT JOIN ref.divisione d ON d.id = fm.divisione_id
@@ -201,7 +201,89 @@ export async function getGeneral(db: pg.Pool, user: UserContext, id: number) {
 // ---------------------------------------------------------------------------
 // Aggiornamento dati anagrafici (UpdateSupplierGeneralData, spec. cap. 9)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Controlli su codici e duplicati, comuni a creazione e modifica
+// ---------------------------------------------------------------------------
+type Codes = { partitaIva: string | null; partitaIvaCee: string | null; codiceFiscale: string | null };
+
+/** Normalizza i codici (maiuscolo, senza spazi e punti). */
+function normalizeCodes<T extends Codes>(input: T): T {
+  const n = (v: string | null) => (v == null ? null : normalizeCode(v) || null);
+  return { ...input, partitaIva: n(input.partitaIva), partitaIvaCee: n(input.partitaIvaCee), codiceFiscale: n(input.codiceFiscale) };
+}
+
+/**
+ * Controllo formale dei codici. In modifica si controllano solo quelli cambiati:
+ * un dato importato con un codice irregolare non deve impedire di salvare gli altri campi.
+ */
+function checkCodes(input: Codes, current?: Codes) {
+  const errors: { campo: string; messaggio: string }[] = [];
+  const changed = (k: keyof Codes) => input[k] != null && input[k] !== current?.[k];
+  if (changed('partitaIva') && !isValidPartitaIva(input.partitaIva!)) {
+    errors.push({ campo: 'partitaIva', messaggio: 'Partita IVA non valida: servono 11 cifre con la cifra di controllo corretta' });
+  }
+  if (changed('codiceFiscale') && !isValidCodiceFiscale(input.codiceFiscale!)) {
+    errors.push({ campo: 'codiceFiscale', messaggio: 'Codice fiscale non valido' });
+  }
+  if (changed('partitaIvaCee') && !isValidPartitaIvaCee(input.partitaIvaCee!)) {
+    errors.push({ campo: 'partitaIvaCee', messaggio: 'P.IVA CEE non valida: prefisso del paese seguito dal codice (es. IT01234567890)' });
+  }
+  if (errors.length) throw badRequest('RICHIESTA_NON_VALIDA', 'Alcuni dati della richiesta non sono validi', errors);
+}
+
+/**
+ * Altri fornitori con la stessa P.IVA, P.IVA CEE o codice fiscale.
+ * Non è un divieto (esistono casi legittimi), ma l'utente deve confermare.
+ */
+async function checkDuplicates(db: Queryable, input: Codes & { confermaDuplicato: boolean }, excludeId: number | null) {
+  if (input.confermaDuplicato || (!input.partitaIva && !input.partitaIvaCee && !input.codiceFiscale)) return;
+  const { rows } = await db.query(
+    `SELECT id, ragione_sociale AS "ragioneSociale"
+       FROM albo.fornitore
+      WHERE ($1::bigint IS NULL OR id <> $1)
+        AND (partita_iva = $2 OR partita_iva_cee = $3 OR codice_fiscale = $4)
+      ORDER BY ragione_sociale
+      LIMIT 10`,
+    [excludeId, input.partitaIva, input.partitaIvaCee, input.codiceFiscale],
+  );
+  if (rows.length) {
+    throw new AppError(
+      409,
+      'POSSIBILE_DUPLICATO',
+      'Esistono già fornitori con la stessa partita IVA o lo stesso codice fiscale',
+      { fornitori: rows },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Creazione (CreateSupplier)
+// ---------------------------------------------------------------------------
+export async function createSupplier(db: pg.Pool, user: UserContext, raw: CreateSupplier, meta: RequestMeta) {
+  const input = normalizeCodes(raw);
+  checkCodes(input);
+  return withTransaction(db, async (tx) => {
+    await checkDuplicates(tx, input, null);
+    const { rows } = await tx.query(
+      `INSERT INTO albo.fornitore
+         (ragione_sociale, partita_iva, partita_iva_cee, codice_fiscale, telefono, email, fonte_master, created_by, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, 'ALBO', $7, $7) RETURNING id`,
+      [input.ragioneSociale, input.partitaIva, input.partitaIvaCee, input.codiceFiscale, input.telefono, input.email, user.id],
+    );
+    const id = rows[0]!.id as number;
+    const { confermaDuplicato, ...dettagli } = input;
+    await audit(tx, user, { azione: 'SUPPLIER_CREATE', entita: 'fornitore', entitaId: id, fornitoreId: id, dettagli: { ...dettagli, confermaDuplicato } }, meta);
+    return { id };
+  });
+}
+
 const GENERAL_COLUMNS = {
+  ragioneSociale: 'ragione_sociale',
+  partitaIva: 'partita_iva',
+  partitaIvaCee: 'partita_iva_cee',
+  codiceFiscale: 'codice_fiscale',
+  telefono: 'telefono',
+  fax: 'fax',
   denominazioneSociale: 'denominazione_sociale',
   sedeLegale: 'sede_legale',
   dataInizioAttivita: 'data_inizio_attivita',
@@ -212,9 +294,10 @@ const GENERAL_COLUMNS = {
   emailPec: 'email_pec',
   numeroRea: 'numero_rea',
   sitoWeb: 'sito_web',
-} as const satisfies Record<Exclude<keyof UpdateGeneral, 'versione'>, string>;
+} as const satisfies Record<Exclude<keyof UpdateGeneral, 'versione' | 'confermaDuplicato'>, string>;
 
-export async function updateGeneral(db: pg.Pool, user: UserContext, id: number, body: UpdateGeneral, meta: RequestMeta) {
+export async function updateGeneral(db: pg.Pool, user: UserContext, id: number, raw: UpdateGeneral, meta: RequestMeta) {
+  const body = normalizeCodes(raw);
   return withTransaction(db, async (tx) => {
     const cols = Object.values(GENERAL_COLUMNS);
     const { rows } = await tx.query(
@@ -226,6 +309,18 @@ export async function updateGeneral(db: pg.Pool, user: UserContext, id: number, 
     if (current.versione !== body.versione) {
       throw conflict('MODIFICATO_DA_ALTRI', 'I dati sono stati modificati da un altro utente. Ricarica la pagina e riprova.');
     }
+    checkCodes(body, { partitaIva: current.partita_iva, partitaIvaCee: current.partita_iva_cee, codiceFiscale: current.codice_fiscale });
+    // il controllo dei duplicati riguarda solo i codici cambiati
+    await checkDuplicates(
+      tx,
+      {
+        partitaIva: body.partitaIva !== current.partita_iva ? body.partitaIva : null,
+        partitaIvaCee: body.partitaIvaCee !== current.partita_iva_cee ? body.partitaIvaCee : null,
+        codiceFiscale: body.codiceFiscale !== current.codice_fiscale ? body.codiceFiscale : null,
+        confermaDuplicato: body.confermaDuplicato,
+      },
+      id,
+    );
 
     const keys = Object.keys(GENERAL_COLUMNS) as (keyof typeof GENERAL_COLUMNS)[];
     const sets = keys.map((k, i) => `${GENERAL_COLUMNS[k]} = $${i + 2}`);
@@ -285,9 +380,33 @@ export async function removeState(db: pg.Pool, user: UserContext, fornitoreId: n
 // ---------------------------------------------------------------------------
 // Indirizzi (AddSupplierAddress)
 // ---------------------------------------------------------------------------
+/**
+ * Località dell'indirizzo: quella scelta dall'elenco, oppure una località estera scritta a mano,
+ * riusata se esiste già con lo stesso nome. In Italia il comune va scelto dall'elenco ISTAT.
+ */
+async function resolveLocality(tx: Queryable, a: AddAddress): Promise<number> {
+  if (a.localitaId) return a.localitaId;
+  const { rows: naz } = await tx.query('SELECT iso2 FROM ref.nazione WHERE id = $1', [a.nazioneId]);
+  if (!naz[0]) throw badRequest('RIFERIMENTO_NON_VALIDO', 'Nazione inesistente');
+  if (naz[0].iso2 === 'IT') {
+    throw badRequest('RICHIESTA_NON_VALIDA', 'Per l’Italia scegli il comune dall’elenco', [
+      { campo: 'localitaId', messaggio: 'Scegli il comune dall’elenco' },
+    ]);
+  }
+  const nome = a.localitaNome!.replace(/\s+/g, ' ');
+  const { rows } = await tx.query(
+    `SELECT id FROM ref.localita WHERE nazione_id = $1 AND common.f_search_key(descrizione_it) = common.f_search_key($2)`,
+    [a.nazioneId, nome],
+  );
+  if (rows[0]) return rows[0].id;
+  const created = await tx.query('INSERT INTO ref.localita (descrizione_it, nazione_id) VALUES ($1, $2) RETURNING id', [nome, a.nazioneId]);
+  return created.rows[0]!.id;
+}
+
 export async function addAddress(db: pg.Pool, user: UserContext, fornitoreId: number, a: AddAddress, meta: RequestMeta) {
   return withTransaction(db, async (tx) => {
     await assertSupplierExists(tx, fornitoreId);
+    const localitaId = await resolveLocality(tx, a);
     // Il primo indirizzo è sempre il principale
     const { rowCount } = await tx.query('SELECT 1 FROM albo.fornitore_indirizzo WHERE fornitore_id = $1 LIMIT 1', [fornitoreId]);
     const principale = a.principale || !rowCount;
@@ -298,7 +417,7 @@ export async function addAddress(db: pg.Pool, user: UserContext, fornitoreId: nu
       `INSERT INTO albo.fornitore_indirizzo
          (fornitore_id, tipo_indirizzo_id, localita_id, indirizzo, cap, telefono, principale, created_by, updated_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8) RETURNING id`,
-      [fornitoreId, a.tipoIndirizzoId, a.localitaId, a.indirizzo, a.cap, a.telefono, principale, user.id],
+      [fornitoreId, a.tipoIndirizzoId, localitaId, a.indirizzo, a.cap, a.telefono, principale, user.id],
     );
     const id = rows[0]!.id as number;
     await audit(tx, user, { azione: 'SUPPLIER_ADDRESS_ADD', entita: 'fornitore_indirizzo', entitaId: id, fornitoreId, dettagli: a }, meta);

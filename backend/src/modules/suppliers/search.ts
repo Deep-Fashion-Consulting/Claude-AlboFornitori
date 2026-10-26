@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeCode } from './codes.js';
 
 const SiNo = z.enum(['si', 'no']);
 const idList = z
@@ -13,8 +14,9 @@ export const SearchCriteriaSchema = z.object({
   partitaIvaCee: z.string().trim().max(20).optional(),
   codiceFiscale: z.string().trim().max(20).optional(),
   uf: z.string().trim().max(30).optional(),
-  codiceSap: z.string().trim().max(50).optional(),
-  codiceSt3: z.string().trim().max(50).optional(),
+  /** Codice del fornitore in un sistema esterno; con applicativoId si cerca solo in quel sistema */
+  codiceEsterno: z.string().trim().max(50).optional(),
+  applicativoId: z.coerce.number().int().positive().optional(),
   marchioId: z.coerce.number().int().positive().optional(),
   nazioneId: z.coerce.number().int().positive().optional(),
   regioneId: z.coerce.number().int().positive().optional(),
@@ -46,8 +48,6 @@ export type SearchCriteria = z.infer<typeof SearchCriteriaSchema>;
 /** Escape dei caratteri jolly di LIKE nell'input utente. */
 export const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
-/** Toglie spazi e punti da P.IVA / CF e porta in maiuscolo. */
-const normalizeCode = (s: string) => s.replace(/[\s.]/g, '').toUpperCase();
 
 /**
  * Costruisce la query di ricerca con soli parametri posizionali
@@ -79,13 +79,13 @@ export function buildSearchQuery(c: SearchCriteria, userId: number): { text: str
   if (c.codiceFiscale) where.push(`f.codice_fiscale LIKE ${p(escapeLike(normalizeCode(c.codiceFiscale)))} || '%'`);
   if (c.uf) where.push(`f.uf ILIKE ${p(escapeLike(c.uf))}`);
 
-  const codeFilter = (applicativo: string, codice: string) =>
+  if (c.codiceEsterno) {
     exists(
-      `SELECT 1 FROM albo.fornitore_codice_applicativo ca JOIN ref.applicativo a ON a.id = ca.applicativo_id
-        WHERE ca.fornitore_id = f.id AND a.codice = ${p(applicativo)} AND ca.codice = ${p(codice)}`,
+      `SELECT 1 FROM albo.fornitore_codice_applicativo ca
+        WHERE ca.fornitore_id = f.id AND upper(ca.codice) = upper(${p(c.codiceEsterno)})
+          ${c.applicativoId ? `AND ca.applicativo_id = ${p(c.applicativoId)}` : ''}`,
     );
-  if (c.codiceSap) codeFilter('SAP', c.codiceSap);
-  if (c.codiceSt3) codeFilter('ST3', c.codiceSt3);
+  }
 
   if (c.marchioId) {
     exists(`SELECT 1 FROM albo.fornitore_marchio fm WHERE fm.fornitore_id = f.id AND fm.marchio_id = ${p(c.marchioId)}`);
@@ -151,7 +151,7 @@ export function buildSearchQuery(c: SearchCriteria, userId: number): { text: str
 
   const text = `
     SELECT f.id, f.ragione_sociale, f.partita_iva, f.partita_iva_cee, f.codice_fiscale, f.email,
-           f.codici_sap, f.codici_st3, f.stato_id, f.stato_descrizione_it, f.stato_descrizione_en, f.attivo,
+           f.codici_esterni, f.stato_id, f.stato_descrizione_it, f.stato_descrizione_en, f.attivo,
            EXISTS (SELECT 1 FROM albo.fornitore_preferito fp WHERE fp.fornitore_id = f.id AND fp.utente_id = ${user}) AS preferito,
            count(*) OVER () AS totale
       FROM albo.v_fornitore_sintesi f

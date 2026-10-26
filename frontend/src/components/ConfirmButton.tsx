@@ -9,8 +9,11 @@ export function ConfirmButton({
   confirmLabel,
   onConfirm,
   disabled,
+  ariaLabel,
 }: {
   label: string;
+  /** Testo per gli screen reader quando l'etichetta visibile è un simbolo */
+  ariaLabel?: string;
   confirmLabel: string;
   onConfirm: () => void;
   disabled?: boolean;
@@ -38,6 +41,7 @@ export function ConfirmButton({
         }
       }}
       onBlur={() => setArmed(false)}
+      aria-label={armed ? undefined : ariaLabel}
     >
       {armed ? confirmLabel : label}
     </button>

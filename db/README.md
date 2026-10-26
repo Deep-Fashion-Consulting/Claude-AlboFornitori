@@ -17,6 +17,10 @@ for f in db/migrations/0*.sql; do psql -d albo -v ON_ERROR_STOP=1 -f "$f"; done
 | `004_albo.sql` | Dominio fornitore: anagrafica, società, economia, produzione, logistica, contratti, compliance, valutazioni |
 | `005_ext_audit.sql` | Dati importati da SAP/ST3/ERP (sola lettura) e log applicativo |
 | `006_views.sql` | Viste che sostituiscono le principali `VIEW_*` legacy |
+| `007_auth_locale.sql` | Password e sessioni per l'accesso con utente e password |
+| `008_fornitore_albo_master.sql` | L'Albo diventa la fonte principale delle anagrafiche dei fornitori |
+| `009_configurazione_prodotto.sql` | Menu e gruppi predefiniti, funzione Liste di valori, nomi indipendenti dal cliente, codici esterni generici |
+| `010_dati_geografici.sql` | Nazioni, regioni, province, comuni italiani (ISTAT) e valute; generata da `tools/genera-dati-geografici.mjs` |
 
 ## Schemi
 
@@ -70,7 +74,7 @@ erDiagram
 | Legacy | Nuovo modello | Motivo |
 | --- | --- | --- |
 | `Session("IDFornitore")` | Fornitore nell'URL (`/fornitori/:id/...`) | API stateless, link condivisibili |
-| Windows Authentication | `iam.utente.oidc_subject` + username normalizzato | Login OIDC; `username` permette di agganciare gli utenti esistenti |
+| Windows Authentication | `iam.utente.password_hash` + `iam.sessione` (migrazione 007) | Utente e password gestiti dall'Albo: ogni installazione è autonoma |
 | SQL dinamico concatenato | Indici dedicati alla ricerca (trigram, accent-insensitive) | Query parametrizzate e performanti |
 | Geocoding a runtime | Coordinate salvate in `fornitore_indirizzo` | Mappa senza chiamate esterne ad ogni apertura |
 | `REFERENCE` come tipo di collegamento | Lettura inversa di `ALTERNATIVO` (vista `v_fornitore_collegamento`) | "Fornitore alternativo di" è la stessa relazione vista dall'altro lato |

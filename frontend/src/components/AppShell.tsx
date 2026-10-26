@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet } from 'react-router';
+import { Link, Outlet } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { setLanguage } from '../api/queries';
@@ -53,9 +53,9 @@ export function AppShell() {
               </button>
             ))}
           </div>
-          <span className="topbar__user">
+          <Link to="/profilo/password" className="topbar__user" title={t('password.title')}>
             {me.nome} {me.cognome}
-          </span>
+          </Link>
           <button type="button" className="btn btn--quiet btn--small" onClick={() => void signOut()}>
             {t('auth.signOut')}
           </button>

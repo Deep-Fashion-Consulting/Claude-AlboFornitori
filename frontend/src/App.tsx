@@ -2,9 +2,11 @@ import { Navigate, Route, Routes, useLocation } from 'react-router';
 import { useAuth } from './auth/AuthProvider';
 import { AppShell } from './components/AppShell';
 import { Loading } from './components/Feedback';
-import { AuthCallbackPage } from './pages/AuthCallbackPage';
 import { LoginPage } from './pages/LoginPage';
+import { PasswordPage } from './pages/PasswordPage';
 import { SearchPage } from './pages/SearchPage';
+import { NewSupplierPage } from './pages/NewSupplierPage';
+import { AdminListsPage } from './pages/AdminListsPage';
 import { NotFoundPage, PlaceholderPage, SupplierScope } from './pages/SimplePages';
 import { SupplierGeneralPage } from './pages/SupplierGeneralPage';
 import { CompanyPage } from './pages/CompanyPage';
@@ -29,7 +31,6 @@ export function App() {
   return (
     <Routes>
       <Route path="/accesso" element={<LoginPage />} />
-      <Route path="/auth/callback" element={<AuthCallbackPage />} />
       <Route
         element={
           <RequireAuth>
@@ -39,6 +40,8 @@ export function App() {
       >
         <Route index element={<Navigate to="/fornitori" replace />} />
         <Route path="fornitori" element={<SearchPage />} />
+        <Route path="fornitori/nuovo" element={<NewSupplierPage />} />
+        <Route path="profilo/password" element={<PasswordPage />} />
         <Route path="fornitori/:id" element={<SupplierScope />}>
           <Route index element={<Navigate to="anagrafica" replace />} />
           <Route path="anagrafica" element={<SupplierGeneralPage />} />
@@ -47,6 +50,7 @@ export function App() {
           <Route path="*" element={<PlaceholderPage />} />
         </Route>
         <Route path="report/*" element={<PlaceholderPage />} />
+        <Route path="amministrazione/liste" element={<AdminListsPage />} />
         <Route path="amministrazione/*" element={<PlaceholderPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
